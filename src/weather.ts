@@ -1,4 +1,5 @@
 import type { DailyWeather, GeocodeResult, HourlyWeather, WeatherData } from './types';
+import type { WeatherSnapshot } from './db/types';
 import { FORECAST_DAY_LIMIT } from './types';
 
 const WEATHER_CODES: Record<number, string> = {
@@ -336,4 +337,111 @@ export function geolocationHint(): string {
     return 'Precise location needs HTTPS. Search for a city below, or we can estimate from your network.';
   }
   return 'Allow location in your browser, search for a city, or use approximate location from your IP.';
+}
+
+function formatYmd(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function pickHourIndex(times: string[], target: Date): number {
+  const targetMs = target.getTime();
+  let best = 0;
+  let bestDiff = Infinity;
+  times.forEach((t, i) => {
+    const diff = Math.abs(new Date(t).getTime() - targetMs);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = i;
+    }
+  });
+  return best;
+}
+
+/** Weather at a specific time/place for sighting records (archive or forecast API). */
+export async function fetchWeatherSnapshot(
+  lat: number,
+  lon: number,
+  at: Date,
+): Promise<WeatherSnapshot> {
+  const now = Date.now();
+  const dayMs = 86400000;
+  const isRecent = at.getTime() > now - dayMs && at.getTime() < now + dayMs * 2;
+
+  if (isRecent) {
+    const url = new URL('https://api.open-meteo.com/v1/forecast');
+    url.searchParams.set('latitude', lat.toString());
+    url.searchParams.set('longitude', lon.toString());
+    url.searchParams.set(
+      'hourly',
+      'temperature_2m,relative_humidity_2m,dew_point_2m,surface_pressure,cloud_cover,precipitation_probability,wind_speed_10m',
+    );
+    url.searchParams.set('wind_speed_unit', 'ms');
+    url.searchParams.set('forecast_days', '3');
+    url.searchParams.set('timezone', 'UTC');
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Could not fetch weather for sighting time');
+    const data = await res.json();
+    const i = pickHourIndex(data.hourly.time as string[], at);
+    return {
+      tempC: data.hourly.temperature_2m[i],
+      humidityPct: data.hourly.relative_humidity_2m[i],
+      windMs: data.hourly.wind_speed_10m[i],
+      pop: (data.hourly.precipitation_probability[i] ?? 0) / 100,
+      cloudPct: data.hourly.cloud_cover[i] ?? 50,
+      pressureHpa: data.hourly.surface_pressure[i] ?? 1013,
+      dewPointC: data.hourly.dew_point_2m[i] ?? 10,
+    };
+  }
+
+  const ymd = formatYmd(at);
+  const url = new URL('https://archive-api.open-meteo.com/v1/archive');
+  url.searchParams.set('latitude', lat.toString());
+  url.searchParams.set('longitude', lon.toString());
+  url.searchParams.set('start_date', ymd);
+  url.searchParams.set('end_date', ymd);
+  url.searchParams.set(
+    'hourly',
+    'temperature_2m,relative_humidity_2m,dew_point_2m,surface_pressure,cloud_cover,precipitation_probability,wind_speed_10m',
+  );
+  url.searchParams.set('wind_speed_unit', 'ms');
+  url.searchParams.set('timezone', 'UTC');
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Could not fetch historical weather for sighting time');
+  const data = await res.json();
+  const i = pickHourIndex(data.hourly.time as string[], at);
+  return {
+    tempC: data.hourly.temperature_2m[i],
+    humidityPct: data.hourly.relative_humidity_2m[i],
+    windMs: data.hourly.wind_speed_10m[i],
+    pop: (data.hourly.precipitation_probability[i] ?? 0) / 100,
+    cloudPct: data.hourly.cloud_cover[i] ?? 50,
+    pressureHpa: data.hourly.surface_pressure[i] ?? 1013,
+    dewPointC: data.hourly.dew_point_2m[i] ?? 10,
+  };
+}
+
+export function snapshotFromHourly(h: HourlyWeather): WeatherSnapshot {
+  return {
+    tempC: h.temp,
+    humidityPct: h.humidity,
+    windMs: h.windSpeed,
+    pop: h.pop,
+    cloudPct: h.clouds,
+    pressureHpa: h.pressure,
+    dewPointC: h.dewPoint,
+  };
+}
+
+export function snapshotFromDaily(d: DailyWeather): WeatherSnapshot {
+  return {
+    tempC: d.temp.day,
+    humidityPct: d.humidity,
+    windMs: d.windSpeed,
+    pop: d.pop,
+    cloudPct: d.clouds,
+    pressureHpa: d.pressure,
+    dewPointC: d.dewPoint,
+  };
 }

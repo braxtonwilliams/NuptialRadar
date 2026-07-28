@@ -9,6 +9,7 @@ import {
 } from './nuptials';
 import {
   getGreenThreshold,
+  getLocalCalibrationSummary,
   scoreHourly,
   scoreHourlyProbability,
 } from './algorithms/scoring';
@@ -37,6 +38,14 @@ import {
   reverseGeocode,
   searchLocations,
 } from './weather';
+import { initDatabase } from './db/database';
+import {
+  bindSightingsModal,
+  openSightingsModal,
+  renderCalibrationNote,
+  renderSightingsButton,
+  renderSightingsModal,
+} from './sightings-ui';
 
 const STORAGE_KEY = 'nuptial-radar-location';
 
@@ -546,6 +555,7 @@ function render(): void {
           ${showPercentages ? '🐜' : '%'}
         </button>
         ${renderAlgorithmButton()}
+        ${renderSightingsButton()}
       </div>
       ${algorithmToast ? `<div class="algorithm-toast" role="status">${algorithmToast}</div>` : ''}
     </div>
@@ -575,6 +585,7 @@ function render(): void {
       </div>
 
       <p class="location-name">${weather.locationName}</p>
+      ${renderCalibrationNote(weather.lat, weather.lon, getLocalCalibrationSummary)}
       ${renderViewSwitcher()}
     </header>
 
@@ -588,6 +599,7 @@ function render(): void {
           Based on the
           <a href="https://github.com/bradrushworth/nuptialflight" target="_blank" rel="noopener">nuptialflight</a>
           random-forest models. Red &lt;50%, amber 50–59%, green ≥60%.
+          Log sightings with 📝 to calibrate forecasts using your local flight history.
         </p>
       </section>
     </main>
@@ -595,9 +607,11 @@ function render(): void {
     <footer class="footer">
       <p>Weather from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · Models from nuptialflight (GPL-3.0)</p>
     </footer>
+    ${renderSightingsModal()}
   `;
 
   bindEvents();
+  bindSightingsModal();
 }
 
 function bindEvents(): void {
@@ -633,6 +647,18 @@ function bindEvents(): void {
 
   document.getElementById('toggle-mode')?.addEventListener('click', () => {
     showPercentages = !showPercentages;
+    render();
+  });
+
+  document.getElementById('sightings-log-btn')?.addEventListener('click', () => {
+    if (!weather) return;
+    openSightingsModal(
+      { lat: weather.lat, lon: weather.lon, locationLabel: weather.locationName },
+      () => {
+        if (weather) rebuildForecasts();
+        render();
+      },
+    );
     render();
   });
 
@@ -895,7 +921,7 @@ async function init(): Promise<void> {
   loadSavedAlgorithmId();
   showLoading('Loading prediction models…');
   try {
-    await ensureModelsLoaded();
+    await Promise.all([ensureModelsLoaded(), initDatabase()]);
     const saved = loadSavedLocation();
     if (saved) {
       await loadLocation(saved.lat, saved.lon, saved.name);

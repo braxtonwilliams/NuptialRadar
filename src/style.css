@@ -49,7 +49,7 @@ a {
   align-items: flex-start;
   gap: 1rem;
   margin-bottom: 1.25rem;
-  padding-right: 6.5rem;
+  padding-right: 8.5rem;
 }
 
 .floating-controls {
@@ -1142,6 +1142,219 @@ a {
 @media (min-width: 900px) {
   .day-cards {
     grid-template-columns: repeat(8, 1fr);
+  }
+}
+
+/* Sightings modal */
+.sightings-btn {
+  position: relative;
+}
+
+.sighting-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: #2e7d32;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1.1rem;
+  text-align: center;
+}
+
+.calibration-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  color: #81c784;
+}
+
+.sighting-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: max(1rem, env(safe-area-inset-top)) 1rem 2rem;
+  background: rgba(0, 0, 0, 0.55);
+  overflow-y: auto;
+}
+
+.sighting-modal {
+  width: min(520px, 100%);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: var(--shadow);
+  padding: 1.25rem;
+}
+
+.sighting-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.sighting-modal-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.sighting-modal-sub {
+  margin: 0.25rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.sighting-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.sighting-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.85rem;
+  margin: 0;
+}
+
+.sighting-fieldset legend {
+  padding: 0 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.sighting-radio {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.35rem 0;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.sighting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.sighting-row.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.sighting-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.sighting-input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+}
+
+.sighting-textarea {
+  resize: vertical;
+  min-height: 2.5rem;
+}
+
+.sighting-location-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.sighting-inline-btn {
+  padding: 0.55rem 0.65rem;
+  white-space: nowrap;
+}
+
+.sighting-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.sighting-error {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius);
+  background: rgba(183, 28, 28, 0.15);
+  color: #ef9a9a;
+  font-size: 0.9rem;
+}
+
+.sighting-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.sighting-list-section {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.sighting-list-section h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+}
+
+.sighting-empty {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.sighting-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.sighting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
+}
+
+.sighting-item-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.sighting-delete {
+  flex-shrink: 0;
+  padding: 0.25rem 0.4rem;
+}
+
+@media (max-width: 520px) {
+  .sighting-row.two-col,
+  .sighting-location-row {
+    grid-template-columns: 1fr;
   }
 }
 
