@@ -1,0 +1,42 @@
+---
+description: Remind agent to update project docs after every code change
+alwaysApply: true
+---
+
+# Update documentation after changes
+
+Before finishing any task that modifies this project, update the documentation in `docs/`.
+
+## When to update
+
+Update docs whenever you change:
+
+- Features, UI, or user-facing behavior
+- Architecture, modules, or file structure
+- Algorithms, scoring, or calibration logic
+- Database schema, sightings, or persistence
+- Weather APIs, data pipelines, or external integrations
+- Build config, dependencies, or deployment steps
+- Known limitations or development history
+
+Skip doc updates only for trivial fixes with zero behavioral impact (e.g. typo in a comment, formatting-only diff).
+
+## What to update
+
+| Change type | Primary file | Also check |
+|-------------|--------------|------------|
+| Any substantive change | `docs/project-guide.md` | Relevant section(s) only |
+| New doc pages or index changes | `docs/README.md` | Root `README.md` if quick-start or links change |
+
+## Before you finish
+
+1. Read the affected section(s) in `docs/project-guide.md`.
+2. Edit them so they match the current codebase — not aspirational or outdated.
+3. If you added a feature or fixed a limitation, update **Development history** at the bottom of the project guide.
+4. Do not leave documentation updates as a follow-up unless the user explicitly asked you not to document.
+
+## Doc locations
+
+- **Full reference:** `docs/project-guide.md`
+- **Index:** `docs/README.md`
+- **Short intro:** root `README.md`

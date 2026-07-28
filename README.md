@@ -51,6 +51,13 @@ Emojis: 👎 🤏 🤞 🐜👌 🐜👍 🐜💪 🐜🫶
 - Prediction models and logic from [bradrushworth/nuptialflight](https://github.com/bradrushworth/nuptialflight) (GPL-3.0)
 - Weather data from [Open-Meteo](https://open-meteo.com/)
 
+## Documentation
+
+Detailed project documentation lives in **[docs/](./docs/)**:
+
+- [Documentation index](./docs/README.md)
+- [Full project guide](./docs/project-guide.md) — architecture, algorithms, database, weather pipeline, UI, and development history
+
 ## License
 
 GPL-3.0 (models and derived logic from nuptialflight)
