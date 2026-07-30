@@ -1258,6 +1258,19 @@ html[data-theme="light"] .month-cell.has-green {
     justify-content: center;
   }
 
+  /* Compact layout: fixed toolbar must not cover location search */
+  html[data-simple="true"] {
+    --mobile-toolbar-offset: calc(max(0.35rem, env(safe-area-inset-top, 0px)) + 3.1rem);
+  }
+
+  html[data-simple="true"] .header {
+    padding-top: var(--mobile-toolbar-offset);
+  }
+
+  html[data-simple="true"] .search-results {
+    z-index: 350;
+  }
+
   .today-scores {
     grid-template-columns: 1fr;
   }
@@ -1590,6 +1603,11 @@ html[data-simple="true"] .brand-icon {
 html[data-simple="true"] .brand h1 {
   font-size: 0.95rem;
   line-height: 1.15;
+}
+
+html[data-simple="true"] .location-bar {
+  position: relative;
+  z-index: 1;
 }
 
 html[data-simple="true"] .location-bar input {
