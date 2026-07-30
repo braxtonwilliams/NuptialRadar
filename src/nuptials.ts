@@ -56,7 +56,7 @@ export function flightLikelihoodText(pct: number, lat: number, dateUtc: Date): s
   return `Flight ${qualifier} — probably ${bestSize} species`;
 }
 
-export function nuptialHourlyPercentageModel(lat: number, lon: number, hourly: HourlyWeather): number {
+function hourlyFeatureVector(lat: number, lon: number, hourly: HourlyWeather): number[] {
   const temp = hourly.temp;
   const wind = hourly.windSpeed;
   const gust = hourly.windGust;
@@ -73,39 +73,16 @@ export function nuptialHourlyPercentageModel(lat: number, lon: number, hourly: H
   const cosDoy = Math.cos((2 * Math.PI * doy) / 365.25);
   const dewDep = temp - dewPoint;
 
-  if (temp < 5 || wind > 15 || gust > 20) return 0.01;
-
-  return Math.min(
-    0.99,
-    Math.max(
-      0.01,
-      getHourlyModel().scorePositive([
-        lat,
-        lon,
-        hemisphere,
-        sinDoy,
-        cosDoy,
-        hour,
-        temp,
-        wind,
-        humid,
-        press,
-        dewPoint,
-        dewDep,
-        uvi,
-        gust,
-      ]),
-    ),
-  );
+  return [lat, lon, hemisphere, sinDoy, cosDoy, hour, temp, wind, humid, press, dewPoint, dewDep, uvi, gust];
 }
 
-export function nuptialDailyPercentageModel(
+function dailyFeatureVector(
   lat: number,
   lon: number,
   daily: DailyWeather,
   pop1?: number,
   pop2?: number,
-): number {
+): number[] {
   const temp = daily.temp.day;
   const wind = daily.windSpeed;
   const gust = daily.windGust;
@@ -133,41 +110,93 @@ export function nuptialDailyPercentageModel(
   const moonSin = Math.sin(2 * Math.PI * moon);
   const moonCos = Math.cos(2 * Math.PI * moon);
 
+  return [
+    lat,
+    lon,
+    hemisphere,
+    sinDoy,
+    cosDoy,
+    temp,
+    wind,
+    rain,
+    humid,
+    cloud,
+    press,
+    dewPoint,
+    dewDep,
+    popNext1,
+    popNext2,
+    uvi,
+    gust,
+    rainMm,
+    daylength,
+    moonSin,
+    moonCos,
+  ];
+}
+
+function clampRfProb(prob: number): number {
+  return Math.min(0.99, Math.max(0.01, prob));
+}
+
+/** RF hourly score without hard weather gates (Biology v3). */
+export function nuptialHourlyRfRaw(lat: number, lon: number, hourly: HourlyWeather): number {
+  return clampRfProb(getHourlyModel().scorePositive(hourlyFeatureVector(lat, lon, hourly)));
+}
+
+/** RF daily score without hard weather gates (Biology v3). */
+export function nuptialDailyRfRaw(
+  lat: number,
+  lon: number,
+  daily: DailyWeather,
+  pop1?: number,
+  pop2?: number,
+): number {
+  return clampRfProb(getDailyModel().scorePositive(dailyFeatureVector(lat, lon, daily, pop1, pop2)));
+}
+
+export function nuptialHourlyRfWithConfidence(lat: number, lon: number, hourly: HourlyWeather) {
+  return getHourlyModel().scorePositiveWithConfidence(hourlyFeatureVector(lat, lon, hourly));
+}
+
+export function nuptialDailyRfWithConfidence(
+  lat: number,
+  lon: number,
+  daily: DailyWeather,
+  pop1?: number,
+  pop2?: number,
+) {
+  return getDailyModel().scorePositiveWithConfidence(dailyFeatureVector(lat, lon, daily, pop1, pop2));
+}
+
+export function nuptialHourlyPercentageModel(lat: number, lon: number, hourly: HourlyWeather): number {
+  const temp = hourly.temp;
+  const wind = hourly.windSpeed;
+  const gust = hourly.windGust;
+
   if (temp < 5 || wind > 15 || gust > 20) return 0.01;
 
-  return Math.min(
-    0.99,
-    Math.max(
-      0.01,
-      getDailyModel().scorePositive([
-        lat,
-        lon,
-        hemisphere,
-        sinDoy,
-        cosDoy,
-        temp,
-        wind,
-        rain,
-        humid,
-        cloud,
-        press,
-        dewPoint,
-        dewDep,
-        popNext1,
-        popNext2,
-        uvi,
-        gust,
-        rainMm,
-        daylength,
-        moonSin,
-        moonCos,
-      ]),
-    ),
-  );
+  return nuptialHourlyRfRaw(lat, lon, hourly);
+}
+
+export function nuptialDailyPercentageModel(
+  lat: number,
+  lon: number,
+  daily: DailyWeather,
+  pop1?: number,
+  pop2?: number,
+): number {
+  const temp = daily.temp.day;
+  const wind = daily.windSpeed;
+  const gust = daily.windGust;
+
+  if (temp < 5 || wind > 15 || gust > 20) return 0.01;
+
+  return nuptialDailyRfRaw(lat, lon, daily, pop1, pop2);
 }
 
 export function percentageToInt(prob: number): number {
-  return Math.round(prob * 100);
+  return Math.trunc(prob * 100);
 }
 
 export function getEmoji(percentage: number): string {

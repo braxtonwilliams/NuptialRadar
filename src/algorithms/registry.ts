@@ -61,6 +61,7 @@ export function loadSavedAlgorithmId(): void {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved && getAlgorithmById(saved)) activeId = saved;
+    else if (saved === 'biology-v3') activeId = DEFAULT_ALGORITHM_ID;
   } catch {
     /* ignore */
   }

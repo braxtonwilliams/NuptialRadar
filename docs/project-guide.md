@@ -45,9 +45,11 @@ The app is a static front-end deployed on Vercel. Weather is fetched from public
 
 The original [nuptialflight](https://github.com/bradrushworth/nuptialflight) mobile app focuses heavily on **today’s** flight probability. Nuptial Radar expands that into a **multi-day planning tool** with 24-hour, 7-day, and (when conditions warrant) full-month views.
 
-### Open-Meteo instead of OpenWeatherMap
+### Open-Meteo weather data
 
-The original app uses OpenWeatherMap. Nuptial Radar uses [Open-Meteo](https://open-meteo.com/) so the site works with zero API keys or account setup. Weather fields are mapped to the same model inputs the nuptialflight forests expect (temperature, humidity, wind, pressure, dew point, precipitation probability, etc.).
+Nuptial Radar uses [Open-Meteo](https://open-meteo.com/) (no API key). Hourly **surface pressure at 2 m** is used — the ground-level reading field studies describe, not sea-level-adjusted pressure.
+
+Scores may differ from the nuptialflight mobile app (which uses OpenWeatherMap) because the underlying weather models differ. Use the **⏱ from now** hourly anchor and **🌲 Forest v1** for the closest comparison. Week/day card colors use the **daily RF model**; the 24-hour histogram uses **hourly RF** scores.
 
 ### Swappable algorithms without breaking production
 
@@ -177,7 +179,7 @@ Days with any hourly slot ≥60% show a 🟢 on day cards and month cells.
 
 ### Algorithm switcher
 
-Floating **🌲** (Forest v1) / **📖** (Hybrid v2) button cycles prediction models. A brief toast confirms the active model name.
+Floating **🌲** (Forest v1) / **📖** (Hybrid v2) button cycles prediction models. **🧬** toggles **biology insights** (confidence, activity, rain/window context) without changing scores. A brief toast confirms the active model name.
 
 ### Sighting logger
 
@@ -257,7 +259,7 @@ The nearest hourly timestep to the observation time is selected.
 
 ### Variable mapping
 
-Open-Meteo fields are converted into the structures expected by nuptialflight models (`DailyWeather`, `HourlyWeather`). Wind is requested in m/s to match model training units.
+Open-Meteo fields are converted into the structures expected by nuptialflight models. **Surface pressure at 2 m** is used; live daily rows are built from hourly aggregates where applicable.
 
 ---
 
@@ -265,20 +267,26 @@ Open-Meteo fields are converted into the structures expected by nuptialflight mo
 
 ### 24-hour glance
 
-`getNext24HourSlots()` filters hourly data from now to +24 h. The UI renders:
+Uses the **hourly anchor** preference (🕛 full day from midnight · ⏱ 24 hours from current hour). Default is **midnight**; **from now** matches the nuptialflight mobile histogram (first 24 hourly slots from the current local hour, which is why overnight orange windows line up with the original app).
 
-- A color strip (one block per hour)
+The UI renders:
+
+- A color strip (one block per hour; absolute % for color and height)
 - Summary line (green window count, peak % and time)
-- Inline legend for red / amber / green
+- Toggle to switch midnight ↔ from-now (persisted in `localStorage`)
 
 ### 7-day outlook
 
 `buildDayForecasts()` produces `DayForecast[]` for live daily data plus extended climate days. Each day includes:
 
-- Daily percentage (from active algorithm + local calibration)
-- Peak hourly percentage that day (for month calendar coloring)
+- **Card color/emoji** — peak hourly score that day (matches the hourly chart)
+- **`dailyModelPercentage`** — daily RF model score (shown as “Day overall” in detail, like nuptialflight)
 - `hasGreenSlot` — whether any hourly score that day ≥60%
-- Size-class percentages and flight text
+- Size-class percentages and flight text derived from the peak hourly score
+
+### Hourly charts
+
+Bar **height and color** both use the absolute hourly percentage (0–100%), matching nuptialflight’s today histogram — not normalized to the day’s peak.
 
 ### Month calendar
 
@@ -298,9 +306,11 @@ The Month tab is **hidden** unless `hasGreenTimeSlot()` is true for the loaded h
 All scoring flows through `src/algorithms/scoring.ts`, which:
 
 1. Calls the **active algorithm** from the registry
-2. Applies **local calibration** from logged sightings (if any)
+2. Applies **local calibration** from logged sightings — **Hybrid v2 only** (Forest v1 matches nuptialflight raw model output)
 
-### Confidence thresholds
+**Biology insights** (🧬 toggle, `localStorage` key `nuptial-radar-biology-insights`) adds confidence (RF tree disagreement), activity band, rain status, and time window — **display only**; percentages always come from the active algorithm.
+
+### Confidence thresholds (Forest v1 / Hybrid v2)
 
 | Threshold | Value | Meaning |
 |-----------|-------|---------|
@@ -362,6 +372,18 @@ Same hard gates as v1 before fusion.
 | Pressure | Weak effect; avoid storm lows |
 | Seasonal gate | Hemisphere-aware day-of-year from Dunn 2007 / nuptialflight phenology |
 
+### Biology insights (🧬 toggle)
+
+**Files:** `biology-insights.ts`, `biology-v3-features.ts`
+
+Not a separate scoring algorithm. When enabled, overlays on the active model (🌲 or 📖):
+
+- **Confidence** — std dev of per-tree P(flight) from the bundled RF
+- **Activity** — descriptive band from the displayed % (Very Low → Exceptional)
+- **Rain / window** — recent rain context and diurnal window label
+
+Derived features (pressure trends, GDD, soil moisture estimate, etc.) are computed in `biology-v3-features.ts` for a future v4 retrain but **do not** affect current scores.
+
 ### Species size hints
 
 Separate from the RF/hybrid score, `sizeSeasonalPercentages()` applies **monthly multipliers** per size class (small / medium / large queens) based on hemisphere tables in `nuptials.ts`. These adjust display percentages for “which size queen is most likely today” — they do not change the core flight probability.
@@ -411,7 +433,7 @@ If `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` are unset, sightings are disab
 ## Local calibration layer
 
 **File:** `algorithms/local-calibration.ts`  
-**Applied in:** `algorithms/scoring.ts` (after base algorithm, for every hourly and daily score)
+**Applied in:** `algorithms/scoring.ts` after base algorithm — **Hybrid v2 only** (skipped for Forest v1 so production scores match nuptialflight)
 
 ### Intent
 
@@ -455,13 +477,13 @@ If no nearby matches or boost ≤ 0.05, the base model score is returned unchang
 
 - Max width ~1100 px, centered
 - **Dark** and **light** themes via manual toggle (`data-theme` on `<html>`)
-- **Simple / compact mode** via toggle (`data-simple="true"`) — tighter grids, smaller type, hides non-essential sections so forecasts fit on one screen
+- **Simple / compact mode** via toggle (`data-simple="true"`) — smaller header chrome, 7-day strip with tap-to-select days, and a **compact hourly panel** (11 AM / day / 7 PM scores + bar chart) below the week row; hides legend, footer, and full day-detail panel
 - Radial gradient background accents
 
 ### Floating controls (fixed top-right)
 
-- **☀️ / 🌙** — toggle light and dark mode (saved to `localStorage`; first visit follows system preference)
-- **⊟ / ⊞** — compact **simple layout** (denser spacing, hides legend/footer/size breakdown, smaller cards — laptop and mobile)
+- **☀️ / 🌙** — toggle light and dark mode (saved to `localStorage`; **defaults to dark** on first visit)
+- **⊟ / ⊞** — compact **simple layout** (defaults **on**): week strip + **hourly panel** for the selected day (score boxes + bar chart); tap a day to change hours — tap ⊞ for full detail, legend, and footer
 - **% / 🐜** — toggle numeric vs emoji display
 - **🌲 / 📖** — cycle prediction algorithm
 - **📝** — open sighting modal (badge shows record count)
@@ -487,8 +509,9 @@ On mobile, controls wrap in a full-width bar under the safe area.
 |-----|---------|
 | `nuptial-radar-location` | `{ lat, lon, name }` — last selected place |
 | `nuptial-radar-algorithm` | Active algorithm ID (`forest-v1` or `hybrid-literature-v2`) |
-| `nuptial-radar-theme` | `light` or `dark` |
-| `nuptial-radar-simple` | `true` when compact layout is enabled |
+| `nuptial-radar-theme` | `light` or `dark` (default **dark** if unset) |
+| `nuptial-radar-simple` | `true` or `false` (default **true** if unset) |
+| `nuptial-radar-hourly-anchor` | `midnight` (default) or `now` |
 
 Supabase auth session is managed by `@supabase/supabase-js` (not a custom localStorage key). Sightings live in Postgres.
 
@@ -555,7 +578,12 @@ Work on this repository proceeded in roughly this order:
 | **Sightings + SQLite** | sql.js database, sighting modal, weather snapshot on log, local calibration in scoring |
 | **sql.js fix** | Correct Vite import path for wasm build (fixes white screen on load) |
 | **Supabase migration** | Replaced sql.js with Supabase Postgres, anonymous auth, RLS, env-based config |
-| **Display preferences** | Light/dark toggle and compact simple layout (mobile + desktop), persisted in localStorage |
+| **Display preferences** | Light/dark toggle and compact simple layout (mobile + desktop), persisted in localStorage; **default dark + simple** |
+| **Simple layout polish** | Removed forced full-viewport height; enlarged day cards and hourly chart; added 11 AM / day / 7 PM score row in compact hourly panel; **all top-right controls stay visible** in compact mode (%/emoji, algorithm, sightings) |
+| **Scoring parity fixes** | Open-Meteo local-time → UTC `dt`; truncate percentages; Forest v1 skips calibration; day cards use **daily RF model** (not peak hourly); Forest v1 hourly chart uses direct `nuptialHourlyPercentageModel`; hourly chart uses absolute % scale |
+| **Hourly anchor toggle** | 🕛 full day vs ⏱ from-now (nuptialflight-style 24 slots); default midnight |
+| **Open-Meteo only** | Removed OpenWeatherMap integration (paid One Call subscription); forecasts always from Open-Meteo with 2 m surface pressure |
+| **Biology insights toggle** | 🧬 display overlay: RF tree confidence, activity band, rain/window — does not change scores; removed duplicate Biology v3 algorithm |
 
 ### Git commits (as of initial documentation)
 

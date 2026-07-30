@@ -63,6 +63,33 @@ export class ForestModel {
   scorePositive(x: number[]): number {
     return this.predictProba(x)[1];
   }
+
+  /** Per-tree P(flight) for ensemble disagreement / confidence. */
+  treePositiveProbabilities(x: number[]): number[] {
+    return this.trees.map((tree) => tree.predictProba(x)[1]);
+  }
+
+  scorePositiveWithConfidence(x: number[]): {
+    prob: number;
+    variance: number;
+    stdDev: number;
+    confidence: ConfidenceLevel;
+  } {
+    const treeProbs = this.treePositiveProbabilities(x);
+    const prob = treeProbs.reduce((a, b) => a + b, 0) / treeProbs.length;
+    const variance =
+      treeProbs.reduce((acc, p) => acc + (p - prob) ** 2, 0) / treeProbs.length;
+    const stdDev = Math.sqrt(variance);
+    return { prob, variance, stdDev, confidence: confidenceFromStdDev(stdDev) };
+  }
+}
+
+export type ConfidenceLevel = 'Low' | 'Medium' | 'High';
+
+export function confidenceFromStdDev(stdDev: number): ConfidenceLevel {
+  if (stdDev < 0.08) return 'High';
+  if (stdDev < 0.15) return 'Medium';
+  return 'Low';
 }
 
 let dailyModel: ForestModel | null = null;

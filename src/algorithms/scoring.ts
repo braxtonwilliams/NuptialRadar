@@ -1,9 +1,16 @@
 /**
  * Routes all flight scoring through the active algorithm from the registry,
- * then applies local calibration from logged sightings (SQLite).
+ * then applies local calibration from logged sightings when enabled.
  */
 import { getSightingsForCalibration } from '../db/sightings';
+import { percentageToInt } from '../nuptials';
 import type { DailyWeather, HourlyWeather, WeatherData } from '../types';
+import {
+  buildBiologyInsights,
+  dailyRfConfidence,
+  hourlyRfConfidence,
+  type BiologyInsights,
+} from './biology-insights';
 import {
   applyLocalCalibration,
   calibrationContextFromDaily,
@@ -11,10 +18,34 @@ import {
   computeLocalBoost,
 } from './local-calibration';
 import { hybridLiteratureV2Algorithm, nuptialHourlyPercentageV2 } from './nuptials-hybrid-v2';
+import { forestV1Algorithm } from './nuptials-forest-v1';
 import { getActiveAlgorithm } from './registry';
+import {
+  computeBiologyV3DerivedFeatures,
+  formatLocalHourWindow,
+  formatRainStatus,
+} from './biology-v3-features';
 
-function percentageToInt(prob: number): number {
-  return Math.round(prob * 100);
+export type { BiologyInsights, ExpectedActivity } from './biology-insights';
+export { biologyInsightsFlightText } from './biology-insights';
+export type { BiologyV3DerivedFeatures } from './biology-v3-features';
+
+function localDateKey(dt: number, tzOffset: number): string {
+  const d = new Date((dt + tzOffset) * 1000);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function dailyIndexForHourly(weather: WeatherData, hourly: HourlyWeather): number {
+  const key = localDateKey(hourly.dt, weather.timezoneOffset);
+  const idx = weather.daily.findIndex((d) => localDateKey(d.dt, weather.timezoneOffset) === key);
+  return idx >= 0 ? idx : 0;
+}
+
+function usesLocalCalibration(): boolean {
+  return getActiveAlgorithm().id !== forestV1Algorithm.id;
 }
 
 function finalizeHourly(
@@ -24,6 +55,7 @@ function finalizeHourly(
   hourly: HourlyWeather,
   tzOffsetSeconds: number,
 ): number {
+  if (!usesLocalCalibration()) return baseProb;
   const sightings = getSightingsForCalibration();
   const ctx = calibrationContextFromHourly(
     hourly.temp,
@@ -44,6 +76,7 @@ function finalizeDaily(
   daily: DailyWeather,
   tzOffsetSeconds: number,
 ): number {
+  if (!usesLocalCalibration()) return baseProb;
   const sightings = getSightingsForCalibration();
   const ctx = calibrationContextFromDaily(daily, tzOffsetSeconds);
   const { boost, matchCount } = computeLocalBoost(lat, lon, ctx, sightings);
@@ -56,6 +89,66 @@ export function getGreenThreshold(): number {
 
 export function getAmberThreshold(): number {
   return getActiveAlgorithm().amberThreshold;
+}
+
+export function getScoreColor(pct: number): string {
+  const amber = getAmberThreshold();
+  const green = getGreenThreshold();
+  if (pct < amber) return '#b71c1c';
+  if (pct < green) return '#e65100';
+  return '#2e7d32';
+}
+
+export function getScoreBgColor(pct: number): string {
+  const amber = getAmberThreshold();
+  const green = getGreenThreshold();
+  if (pct < amber) return 'rgba(183, 28, 28, 0.12)';
+  if (pct < green) return 'rgba(230, 81, 0, 0.12)';
+  return 'rgba(46, 125, 50, 0.12)';
+}
+
+export function getHourlyBiologyInsights(
+  weather: WeatherData,
+  hourlyIndex: number,
+  displayPct: number,
+): BiologyInsights {
+  const hourly = weather.hourly[hourlyIndex];
+  const rf = hourlyRfConfidence(weather.lat, weather.lon, hourly);
+  return buildBiologyInsights(displayPct, rf.confidence, rf.stdDev);
+}
+
+export function getDailyBiologyInsights(
+  weather: WeatherData,
+  dailyIndex: number,
+  displayPct: number,
+): BiologyInsights {
+  const daily = weather.daily[dailyIndex];
+  const rf = dailyRfConfidence(
+    weather.lat,
+    weather.lon,
+    daily,
+    dailyIndex + 1 < weather.daily.length ? weather.daily[dailyIndex + 1].pop : undefined,
+    dailyIndex + 2 < weather.daily.length ? weather.daily[dailyIndex + 2].pop : undefined,
+  );
+  return buildBiologyInsights(displayPct, rf.confidence, rf.stdDev);
+}
+
+export interface BiologyInsightsContext {
+  rainStatus: string;
+  timeWindow: string;
+  derivedFeatures: ReturnType<typeof computeBiologyV3DerivedFeatures>;
+}
+
+export function getBiologyInsightsContext(
+  weather: WeatherData,
+  hourlyIndex: number,
+): BiologyInsightsContext {
+  const dailyIndex = dailyIndexForHourly(weather, weather.hourly[hourlyIndex]);
+  return {
+    rainStatus: formatRainStatus(weather.hourly, hourlyIndex),
+    timeWindow: formatLocalHourWindow(weather.hourly[hourlyIndex].dt, weather.timezoneOffset),
+    derivedFeatures: computeBiologyV3DerivedFeatures(weather, hourlyIndex, dailyIndex),
+  };
 }
 
 export function scoreHourlyProbability(

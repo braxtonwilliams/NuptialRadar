@@ -33,6 +33,8 @@ export interface HourlyWeather {
   uvi: number;
 }
 
+export type WeatherSource = 'open-meteo';
+
 export interface WeatherData {
   lat: number;
   lon: number;
@@ -45,6 +47,7 @@ export interface WeatherData {
   extendedDaily: DailyWeather[];
   hourly: HourlyWeather[];
   forecastDayCount: number;
+  weatherSource: WeatherSource;
 }
 
 export interface DayForecast {
@@ -52,7 +55,12 @@ export interface DayForecast {
   date: Date;
   label: string;
   weekday: string;
+  /** Card/summary display — daily RF score (matches nuptialflight week cards). */
   percentage: number;
+  /** Daily RF model score (matches nuptialflight “day overall” and week cards). */
+  dailyModelPercentage?: number;
+  /** Best hourly score that day — for badges / month peak coloring. */
+  peakHourlyPercentage?: number;
   weather: DailyWeather;
   sizePercentages: Record<'small' | 'medium' | 'large', number>;
   flightText: string;

@@ -28,6 +28,83 @@ function weatherDescription(code: number): string {
   return WEATHER_CODES[code] ?? 'Unknown';
 }
 
+/**
+ * Open-Meteo returns wall-clock times in the location timezone when timezone=auto.
+ * Convert to Unix UTC to match OpenWeatherMap-style `dt` used by nuptialflight models.
+ */
+export function parseOpenMeteoLocalTime(timeStr: string, tzOffsetSeconds: number): number {
+  const match = timeStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return Math.floor(new Date(timeStr).getTime() / 1000);
+  const y = Number(match[1]);
+  const m = Number(match[2]) - 1;
+  const d = Number(match[3]);
+  const h = Number(match[4]);
+  const min = Number(match[5]);
+  const sec = Number(match[6] ?? 0);
+  const localAsUtcMs = Date.UTC(y, m, d, h, min, sec);
+  return Math.floor((localAsUtcMs - tzOffsetSeconds * 1000) / 1000);
+}
+
+/** Approximate OWM `temp.day` from Open-Meteo daily max/min (fallback when no hourly data). */
+function owmStyleDayTemp(max: number, min: number, mean?: number | null): number {
+  if (max != null && min != null) return (max + min) / 2;
+  return mean ?? max ?? min ?? 0;
+}
+
+export function localDateKeyFromDt(dt: number, tzOffsetSeconds: number): string {
+  const d = new Date((dt + tzOffsetSeconds) * 1000);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function mean(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, v) => sum + v, 0) / values.length;
+}
+
+/**
+ * Replace Open-Meteo daily means with statistics derived from hourly readings
+ * (hourly averages for temp/humidity/pressure/etc.; hourly max for wind/gust/uvi/pop).
+ */
+export function enrichDailyFromHourly(
+  daily: DailyWeather[],
+  hourly: HourlyWeather[],
+  tzOffsetSeconds: number,
+): DailyWeather[] {
+  const byDate = new Map<string, HourlyWeather[]>();
+  for (const h of hourly) {
+    const key = localDateKeyFromDt(h.dt, tzOffsetSeconds);
+    const bucket = byDate.get(key) ?? [];
+    bucket.push(h);
+    byDate.set(key, bucket);
+  }
+
+  return daily.map((day) => {
+    const hours = byDate.get(localDateKeyFromDt(day.dt, tzOffsetSeconds));
+    if (!hours?.length) return day;
+
+    const temps = hours.map((h) => h.temp);
+    return {
+      ...day,
+      temp: {
+        day: mean(temps),
+        min: Math.min(...temps),
+        max: Math.max(...temps),
+      },
+      humidity: mean(hours.map((h) => h.humidity)),
+      dewPoint: mean(hours.map((h) => h.dewPoint)),
+      pressure: mean(hours.map((h) => h.pressure)),
+      windSpeed: Math.max(...hours.map((h) => h.windSpeed)),
+      windGust: Math.max(...hours.map((h) => h.windGust)),
+      clouds: mean(hours.map((h) => h.clouds)),
+      pop: Math.max(...hours.map((h) => h.pop)),
+      uvi: Math.max(...hours.map((h) => h.uvi)),
+    };
+  });
+}
+
 function moonPhaseFromDate(date: Date): number {
   const synodic = 29.53058867;
   const knownNewMoon = Date.UTC(2000, 0, 6, 18, 14);
@@ -91,6 +168,7 @@ async function fetchClimateDaily(
   lon: number,
   startDate: string,
   endDate: string,
+  tzOffsetSeconds: number,
 ): Promise<DailyWeather[]> {
   const url = new URL('https://climate-api.open-meteo.com/v1/climate');
   url.searchParams.set('latitude', lat.toString());
@@ -122,13 +200,16 @@ async function fetchClimateDaily(
   if (!data.daily?.time?.length) return [];
 
   return data.daily.time.map((dateStr: string, i: number) => {
-    const dt = Math.floor(new Date(`${dateStr}T12:00:00Z`).getTime() / 1000);
+    const dt = parseOpenMeteoLocalTime(`${dateStr}T12:00:00`, tzOffsetSeconds);
+    const max = data.daily.temperature_2m_max[i];
+    const min = data.daily.temperature_2m_min[i];
+    const mean = data.daily.temperature_2m_mean[i];
     return {
       dt,
       temp: {
-        day: data.daily.temperature_2m_mean[i] ?? data.daily.temperature_2m_max[i],
-        min: data.daily.temperature_2m_min[i],
-        max: data.daily.temperature_2m_max[i],
+        day: owmStyleDayTemp(max, min, mean),
+        min,
+        max,
       },
       humidity: data.daily.relative_humidity_2m_mean[i] ?? 70,
       dewPoint: data.daily.dew_point_2m_mean[i] ?? 10,
@@ -139,7 +220,7 @@ async function fetchClimateDaily(
       pop: (data.daily.precipitation_probability_max[i] ?? 0) / 100,
       uvi: data.daily.uv_index_max[i] ?? 0,
       rain: data.daily.precipitation_sum[i] ?? 0,
-      moonPhase: moonPhaseFromDate(new Date(dateStr)),
+      moonPhase: moonPhaseFromDate(new Date(dt * 1000)),
       description: 'Climate average',
       isEstimate: true,
     };
@@ -147,6 +228,14 @@ async function fetchClimateDaily(
 }
 
 export async function fetchWeather(lat: number, lon: number, locationName?: string): Promise<WeatherData> {
+  return fetchWeatherFromOpenMeteo(lat, lon, locationName);
+}
+
+async function fetchWeatherFromOpenMeteo(
+  lat: number,
+  lon: number,
+  locationName?: string,
+): Promise<WeatherData> {
   const url = new URL('https://api.open-meteo.com/v1/forecast');
   url.searchParams.set('latitude', lat.toString());
   url.searchParams.set('longitude', lon.toString());
@@ -196,22 +285,25 @@ export async function fetchWeather(lat: number, lon: number, locationName?: stri
   const tzOffsetSeconds = data.utc_offset_seconds ?? 0;
 
   const daily: DailyWeather[] = data.daily.time.map((dateStr: string, i: number) => {
-    const dt = Math.floor(new Date(`${dateStr}T12:00:00`).getTime() / 1000);
+    const dt = parseOpenMeteoLocalTime(`${dateStr}T12:00:00`, tzOffsetSeconds);
     const sunrise = data.daily.sunrise?.[i]
-      ? Math.floor(new Date(data.daily.sunrise[i]).getTime() / 1000)
+      ? parseOpenMeteoLocalTime(data.daily.sunrise[i], tzOffsetSeconds)
       : undefined;
     const sunset = data.daily.sunset?.[i]
-      ? Math.floor(new Date(data.daily.sunset[i]).getTime() / 1000)
+      ? parseOpenMeteoLocalTime(data.daily.sunset[i], tzOffsetSeconds)
       : undefined;
+    const max = data.daily.temperature_2m_max[i];
+    const min = data.daily.temperature_2m_min[i];
+    const mean = data.daily.temperature_2m_mean[i];
 
     return {
       dt,
       sunrise,
       sunset,
       temp: {
-        day: data.daily.temperature_2m_mean[i] ?? data.daily.temperature_2m_max[i],
-        min: data.daily.temperature_2m_min[i],
-        max: data.daily.temperature_2m_max[i],
+        day: owmStyleDayTemp(max, min, mean),
+        min,
+        max,
       },
       humidity: data.daily.relative_humidity_2m_mean[i] ?? 70,
       dewPoint: data.daily.dew_point_2m_mean[i] ?? 10,
@@ -222,7 +314,7 @@ export async function fetchWeather(lat: number, lon: number, locationName?: stri
       pop: (data.daily.precipitation_probability_max[i] ?? 0) / 100,
       uvi: data.daily.uv_index_max[i] ?? 0,
       rain: data.daily.precipitation_sum[i] ?? 0,
-      moonPhase: moonPhaseFromDate(new Date(dateStr)),
+      moonPhase: moonPhaseFromDate(new Date(dt * 1000)),
       description: weatherDescription(data.daily.weather_code[i]),
       isEstimate: false,
     };
@@ -234,11 +326,11 @@ export async function fetchWeather(lat: number, lon: number, locationName?: stri
 
   if (lastForecastDate < monthEnd) {
     const climateStart = addDaysYmd(lastForecastDate, 1);
-    extendedDaily = await fetchClimateDaily(lat, lon, climateStart, monthEnd);
+    extendedDaily = await fetchClimateDaily(lat, lon, climateStart, monthEnd, tzOffsetSeconds);
   }
 
   const hourly: HourlyWeather[] = data.hourly.time.map((timeStr: string, i: number) => ({
-    dt: Math.floor(new Date(timeStr).getTime() / 1000),
+    dt: parseOpenMeteoLocalTime(timeStr, tzOffsetSeconds),
     temp: data.hourly.temperature_2m[i],
     humidity: data.hourly.relative_humidity_2m[i],
     dewPoint: data.hourly.dew_point_2m[i],
@@ -262,21 +354,77 @@ export async function fetchWeather(lat: number, lon: number, locationName?: stri
     extendedDaily,
     hourly,
     forecastDayCount: daily.length,
+    weatherSource: 'open-meteo',
   };
 }
 
 export function getHourlyForDay(
   weather: WeatherData,
   dayIndex: number,
-): { hourly: HourlyWeather[]; scores: number[] } {
+): { hourly: HourlyWeather[]; indices: number[] } {
   const day = weather.daily[dayIndex];
-  if (!day) return { hourly: [], scores: [] };
+  if (!day) return { hourly: [], indices: [] };
 
-  const dayStart = day.dt - 43200;
-  const dayEnd = dayStart + 86400;
+  const dayKey = localDateKeyFromDt(day.dt, weather.timezoneOffset);
+  const hourly: HourlyWeather[] = [];
+  const indices: number[] = [];
+  weather.hourly.forEach((h, i) => {
+    if (localDateKeyFromDt(h.dt, weather.timezoneOffset) === dayKey) {
+      hourly.push(h);
+      indices.push(i);
+    }
+  });
+  return { hourly, indices };
+}
 
-  const hourly = weather.hourly.filter((h) => h.dt >= dayStart && h.dt < dayEnd);
-  return { hourly, scores: [] };
+/** Unix time of the start of the current local hour at the forecast location. */
+export function localHourStartUnix(nowUnix: number, tzOffsetSeconds: number): number {
+  const local = new Date((nowUnix + tzOffsetSeconds) * 1000);
+  const localHourMs = Date.UTC(
+    local.getUTCFullYear(),
+    local.getUTCMonth(),
+    local.getUTCDate(),
+    local.getUTCHours(),
+    0,
+    0,
+  );
+  return Math.floor(localHourMs / 1000) - tzOffsetSeconds;
+}
+
+export type HourlyWindowAnchor = 'midnight' | 'now';
+
+/**
+ * Hourly slots for charts and the 24h strip.
+ * - midnight: full calendar day (dayIndex)
+ * - now: up to 24 consecutive hours from the current local hour (nuptialflight mobile)
+ */
+export function getHourlyWindow(
+  weather: WeatherData,
+  anchor: HourlyWindowAnchor,
+  options: { dayIndex?: number; limit?: number } = {},
+): { hourly: HourlyWeather[]; indices: number[] } {
+  const dayIndex = options.dayIndex ?? 0;
+  const limit = options.limit ?? (anchor === 'now' ? 24 : Infinity);
+
+  if (anchor === 'now') {
+    const startDt = localHourStartUnix(Math.floor(Date.now() / 1000), weather.timezoneOffset);
+    const hourly: HourlyWeather[] = [];
+    const indices: number[] = [];
+    for (let i = 0; i < weather.hourly.length; i++) {
+      if (weather.hourly[i].dt < startDt) continue;
+      hourly.push(weather.hourly[i]);
+      indices.push(i);
+      if (hourly.length >= limit) break;
+    }
+    return { hourly, indices };
+  }
+
+  const day = getHourlyForDay(weather, dayIndex);
+  if (!Number.isFinite(limit)) return day;
+  return {
+    hourly: day.hourly.slice(0, limit),
+    indices: day.indices.slice(0, limit),
+  };
 }
 
 export interface ApproximateLocation {

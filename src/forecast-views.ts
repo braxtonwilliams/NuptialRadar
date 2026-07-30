@@ -8,6 +8,7 @@ import {
   scoreHourlyForWeather,
   hasGreenTimeSlot as scoringHasGreenTimeSlot,
 } from './algorithms/scoring';
+import { getHourlyWindow } from './weather';
 import type { DayForecast, WeatherData } from './types';
 
 export { getGreenThreshold } from './algorithms/scoring';
@@ -71,21 +72,25 @@ export function hasGreenTimeSlot(hourlyScores: number[]): boolean {
   return scoringHasGreenTimeSlot(hourlyScores);
 }
 
-export function getNext24HourSlots(weather: WeatherData, hourlyScores: number[]): HourlySlot[] {
-  const now = Math.floor(Date.now() / 1000);
-  const end = now + 86400;
+export function getNext24HourSlots(
+  weather: WeatherData,
+  hourlyScores: number[],
+  anchor: 'midnight' | 'now' = 'now',
+): HourlySlot[] {
+  const dayIndex = 0;
+  const { hourly, indices } =
+    anchor === 'midnight'
+      ? getHourlyWindow(weather, 'midnight', { dayIndex })
+      : getHourlyWindow(weather, 'now', { limit: 24 });
 
-  return weather.hourly
-    .map((h, i) => ({ h, pct: hourlyScores[i] }))
-    .filter(({ h }) => h.dt >= now && h.dt < end)
-    .map(({ h, pct }) => ({
-      dt: h.dt,
-      local: localDateFromDt(h.dt, weather.timezoneOffset),
-      timeLabel: formatTimeLabel(h.dt, weather.timezoneOffset),
-      percentage: pct,
-      temp: h.temp,
-      wind: h.windSpeed,
-    }));
+  return hourly.map((h, i) => ({
+    dt: h.dt,
+    local: localDateFromDt(h.dt, weather.timezoneOffset),
+    timeLabel: formatTimeLabel(h.dt, weather.timezoneOffset),
+    percentage: hourlyScores[indices[i]] ?? 0,
+    temp: h.temp,
+    wind: h.windSpeed,
+  }));
 }
 
 export function buildDayForecasts(
@@ -98,28 +103,40 @@ export function buildDayForecasts(
   extendedPercentages: number[];
 } {
   const hourlyPeaks = hourlyPeakByDateKey(weather, hourlyScores);
-  const dailyPercentages = scoreAllDays(weather.lat, weather.lon, weather.daily);
+  const dailyPercentages = scoreAllDays(
+    weather.lat,
+    weather.lon,
+    weather.daily,
+    weather.timezoneOffset,
+  );
 
   const dailyForecasts = weather.daily.map((day, index) => {
     const date = localDateFromDt(day.dt, weather.timezoneOffset);
-    const pct = dailyPercentages[index] ?? 0;
     const dateKey = localDateKey(day.dt, weather.timezoneOffset);
     const peak = hourlyPeaks.get(dateKey);
+    const dailyModelPct = dailyPercentages[index] ?? 0;
     return {
       index,
       date,
       label: index === 0 ? 'Today' : formatDate(date, { month: 'short', day: 'numeric' }),
       weekday: formatDate(date, { weekday: 'short' }),
-      percentage: pct,
+      percentage: dailyModelPct,
+      dailyModelPercentage: dailyModelPct,
+      peakHourlyPercentage: peak?.peak ?? dailyModelPct,
       weather: day,
-      sizePercentages: sizeSeasonalPercentages(pct, weather.lat, new Date(day.dt * 1000)),
-      flightText: flightLikelihoodText(pct, weather.lat, new Date(day.dt * 1000)),
+      sizePercentages: sizeSeasonalPercentages(dailyModelPct, weather.lat, new Date(day.dt * 1000)),
+      flightText: flightLikelihoodText(dailyModelPct, weather.lat, new Date(day.dt * 1000)),
       hasGreenSlot: peak?.hasGreen ?? false,
       isEstimate: false,
     };
   });
 
-  const extendedPercentages = scoreAllDays(weather.lat, weather.lon, weather.extendedDaily);
+  const extendedPercentages = scoreAllDays(
+    weather.lat,
+    weather.lon,
+    weather.extendedDaily,
+    weather.timezoneOffset,
+  );
   const extendedForecasts = weather.extendedDaily.map((day, index) => {
     const date = localDateFromDt(day.dt, weather.timezoneOffset);
     const pct = extendedPercentages[index] ?? 0;
