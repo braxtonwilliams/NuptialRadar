@@ -7,6 +7,8 @@ This folder contains detailed documentation for the **Nuptial Radar** project: a
 | Document | Description |
 |----------|-------------|
 | [**Project Guide**](./project-guide.md) | Complete reference: architecture, features, algorithms, database, weather APIs, UI, and development |
+| [**Deploy checklist**](./deploy-checklist.md) | Step-by-step Supabase + Vercel setup |
+| [**Supabase setup**](./supabase-setup.md) | Database migration, env vars, anonymous auth |
 
 ## Quick links
 

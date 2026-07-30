@@ -56,7 +56,7 @@ export function renderSightingsModal(): string {
         <header class="sighting-modal-header">
           <div>
             <h2 id="sighting-modal-title">Log sighting or queen capture</h2>
-            <p class="sighting-modal-sub">Saved locally · used to calibrate forecasts near you</p>
+            <p class="sighting-modal-sub">Saved to your account · used to calibrate forecasts near you</p>
           </div>
           <button type="button" class="btn-icon sighting-close" id="sighting-close" aria-label="Close">✕</button>
         </header>
@@ -187,8 +187,12 @@ export function bindSightingsModal(): void {
   document.querySelectorAll('.sighting-delete').forEach((el) => {
     el.addEventListener('click', () => {
       const id = Number((el as HTMLElement).dataset.id);
-      deleteSighting(id);
-      onSaved?.();
+      void deleteSighting(id)
+        .then(() => onSaved?.())
+        .catch((err) => {
+          formError = err instanceof Error ? err.message : 'Failed to delete sighting';
+          refreshModalOnly();
+        });
     });
   });
 
@@ -245,7 +249,7 @@ async function handleSubmit(form: HTMLFormElement): Promise<void> {
 
   try {
     const weather = await fetchWeatherSnapshot(lat, lon, observedAt);
-    insertSighting({
+    await insertSighting({
       kind,
       latitude: lat,
       longitude: lon,

@@ -33,9 +33,9 @@ This document describes everything implemented in Nuptial Radar: what the app do
 - **Machine-learning models** from the open-source [nuptialflight](https://github.com/bradrushworth/nuptialflight) project (random forests trained on crowd-sourced sightings)
 - **Live weather forecasts** from Open-Meteo (no API key required)
 - **Optional literature-based scoring** (hybrid v2 algorithm)
-- **User-logged local sightings** stored in SQLite (via sql.js) that nudge probabilities toward conditions where flights were actually observed nearby
+- **User-logged sightings** stored in **Supabase Postgres** (via anonymous auth) that nudge probabilities toward conditions where flights were actually observed nearby
 
-The app runs entirely in the browser. There is no backend server; weather is fetched from public APIs, models are bundled as static JSON, and user data stays in `localStorage`.
+The app is a static front-end deployed on Vercel. Weather is fetched from public APIs, models are bundled as static JSON, preferences stay in `localStorage`, and sightings sync to Supabase when configured.
 
 ---
 
@@ -53,9 +53,9 @@ The original app uses OpenWeatherMap. Nuptial Radar uses [Open-Meteo](https://op
 
 The default **Forest v1** algorithm wraps the original nuptialflight scoring logic unchanged. A second **Hybrid v2** algorithm blends those forests with published weather triggers from ant flight literature. Users switch models via a header button; the choice persists in `localStorage`.
 
-### Client-side SQLite for sightings
+### Supabase for sightings
 
-Sightings and queen captures are stored locally in SQLite using [sql.js](https://github.com/sql-js/sql.js) (WebAssembly). This gives structured queries and a familiar schema without requiring a server. The database binary is serialized to `localStorage` after each write.
+Sightings and queen captures are stored in **Supabase Postgres**, accessed from the browser with `@supabase/supabase-js`. **Anonymous auth** gives each browser a persistent user id without sign-up. Row-level security ensures users only see their own records. See [supabase-setup.md](./supabase-setup.md).
 
 ### Graceful location fallback
 
@@ -71,7 +71,8 @@ GPS denial, timeout, or non-HTTPS contexts no longer dead-end the app. The flow 
 | Bundler / dev server | Vite 6 |
 | UI | Vanilla TypeScript + CSS (no React/Vue) |
 | ML inference | Custom random-forest loader (`forest-model.ts`) |
-| Local database | sql.js 1.14 (SQLite in WASM) |
+| Sightings database | Supabase Postgres + `@supabase/supabase-js` |
+| Hosting | Vercel (static `dist/` build) |
 | Weather | Open-Meteo Forecast, Climate, Archive, and Geocoding APIs |
 | IP geolocation fallback | ipwho.is |
 | Fonts | DM Sans (Google Fonts) |
@@ -91,7 +92,10 @@ npm run preview  # Serve production build locally
 
 ```
 NuptialRadar/
-├── docs/                          # This documentation
+├── supabase/
+│   └── migrations/
+│       └── 001_sightings.sql    # Postgres schema + RLS policies
+├── docs/
 ├── public/
 │   └── models/
 │       ├── final_model.json       # Daily random-forest model (from nuptialflight)
@@ -116,8 +120,9 @@ NuptialRadar/
 │   │   └── local-calibration.ts     # Sighting-based probability adjustment
 │   └── db/
 │       ├── types.ts               # SightingRecord, WeatherSnapshot, etc.
-│       ├── database.ts            # sql.js init, schema, localStorage persistence
-│       └── sightings.ts           # CRUD for sightings
+│       ├── supabase.ts            # Supabase client, anonymous auth init
+│       └── sightings.ts           # CRUD + in-memory cache for scoring
+├── .env.example                   # VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
 ├── index.html
 ├── vite.config.ts
 ├── tsconfig.json
@@ -133,7 +138,7 @@ NuptialRadar/
 | `algorithms/scoring.ts` | Single entry point for all probability scores; applies local calibration last |
 | `forecast-views.ts` | Builds `DayForecast` objects, month calendar cells, 24h strip data |
 | `weather.ts` | Fetches 16-day hourly forecast, climate fill for month view, archive weather for past sightings |
-| `db/*` | SQLite schema and sighting CRUD |
+| `db/*` | Supabase client, sightings CRUD, calibration cache |
 | `sightings-ui.ts` | Modal form for logging/deleting sightings |
 
 ---
@@ -369,51 +374,34 @@ Separate from the RF/hybrid score, `sizeSeasonalPercentages()` applies **monthly
 
 ---
 
-## Local sightings database
+## Sightings database (Supabase)
 
 ### Technology
 
-- **sql.js** — SQLite compiled to WebAssembly, runs in the browser
-- **Persistence** — entire DB exported as binary, base64-encoded to `localStorage` key `nuptial-radar-sqlite-v1`
-- **Init** — `initDatabase()` runs at app startup alongside model loading
+- **[Supabase](https://supabase.com/)** — hosted Postgres with auth and row-level security
+- **Client** — `@supabase/supabase-js` in `src/db/supabase.ts`
+- **Auth** — anonymous sign-in on startup (`initSupabase()`); session stored by Supabase client
+- **Cache** — sightings loaded into memory at startup (`refreshSightingsCache()`) so scoring stays synchronous
+- **Setup guide** — [supabase-setup.md](./supabase-setup.md)
 
 ### Schema
 
-```sql
-CREATE TABLE sightings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL CHECK (kind IN ('sighting', 'queen_capture')),
-  latitude REAL NOT NULL,
-  longitude REAL NOT NULL,
-  observed_at TEXT NOT NULL,        -- ISO 8601
-  species TEXT,                     -- optional if size_mm set
-  size_mm REAL,
-  temp_c REAL,                      -- weather at observation time
-  humidity_pct REAL,
-  wind_ms REAL,
-  pop REAL,
-  cloud_pct REAL,
-  pressure_hpa REAL,
-  dew_point_c REAL,
-  notes TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-```
-
-Indexes on `observed_at` and `(latitude, longitude)`.
+See `supabase/migrations/001_sightings.sql`. Core columns match the former SQLite design, plus `user_id uuid` referencing `auth.users`.
 
 ### CRUD API (`db/sightings.ts`)
 
 | Function | Purpose |
 |----------|---------|
-| `insertSighting(input)` | Insert record + weather snapshot; persist |
-| `listSightings(limit)` | Most recent first |
-| `getSightingById(id)` | Single record |
-| `deleteSighting(id)` | Remove and persist |
-| `getSightingsCount()` | Total count |
-| `getSightingsForCalibration()` | Up to 500 records for scoring |
+| `refreshSightingsCache()` | Fetch up to 500 rows from Supabase into memory |
+| `insertSighting(input)` | Insert record + weather snapshot (async) |
+| `listSightings(limit)` | Read from in-memory cache (most recent first) |
+| `deleteSighting(id)` | Delete row and update cache (async) |
+| `getSightingsCount()` | Cache length |
+| `getSightingsForCalibration()` | Full cache for scoring |
 | `formatSightingLabel(record)` | Human-readable list label |
 | `sightingWeatherSnapshot(record)` | Rebuild `WeatherSnapshot` from stored columns |
+
+If `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` are unset, sightings are disabled and the forecast still loads.
 
 ### Sighting kinds
 
@@ -498,9 +486,8 @@ Controls use backdrop blur and stay visible while scrolling.
 |-----|---------|
 | `nuptial-radar-location` | `{ lat, lon, name }` — last selected place |
 | `nuptial-radar-algorithm` | Active algorithm ID (`forest-v1` or `hybrid-literature-v2`) |
-| `nuptial-radar-sqlite-v1` | Base64-encoded SQLite database binary |
 
-All data stays on the client. Clearing site data removes sightings and saved preferences.
+Supabase auth session is managed by `@supabase/supabase-js` (not a custom localStorage key). Sightings live in Postgres.
 
 ---
 
@@ -509,12 +496,17 @@ All data stays on the client. Clearing site data removes sightings and saved pre
 ### Vite configuration (`vite.config.ts`)
 
 - Dev server port **5173** (falls back if busy)
-- `optimizeDeps.include: ['sql.js/dist/sql-wasm.js']` — required so sql.js loads correctly as ESM in the browser
-- `assetsInclude: ['**/*.wasm']` — bundles the SQLite WASM file
 
-### sql.js import note
+### Environment variables
 
-The database module imports from `sql.js/dist/sql-wasm.js` directly (not the package root). The browser-specific export path does not provide a default ESM export under Vite; importing the wasm build explicitly avoids a white-screen crash on load.
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `VITE_SUPABASE_URL` | For sightings | Supabase project URL |
+| `VITE_SUPABASE_ANON_KEY` | For sightings | Supabase anon/public key |
+
+Copy `.env.example` → `.env` for local dev. On **Vercel**, add the same variables under Project Settings → Environment Variables and redeploy.
+
+Open-Meteo weather APIs remain keyless.
 
 ### Production build
 
@@ -526,22 +518,17 @@ Output:
 
 - `dist/index.html`
 - `dist/assets/*.js`, `*.css`
-- `dist/assets/sql-wasm-*.wasm`
 - `dist/models/*.json`
 
-Deploy `dist/` to any static host (GitHub Pages, Netlify, Cloudflare Pages, etc.). No server-side runtime required.
-
-### Environment
-
-No `.env` file is required. All external APIs used are free and keyless for typical usage.
+Deploy via **Vercel** (connected GitHub repo) or any static host. No Node server required at runtime.
 
 ---
 
 ## Known limitations
 
 1. **16-day hourly cap** — Open-Meteo free forecast API limits hourly data to 16 days. Month view fills remaining days with climate **daily** estimates only.
-2. **No sync** — Sightings exist only in the browser that created them.
-3. **localStorage size** — Very large sighting histories could approach storage quotas; practical limits are hundreds of records.
+2. **Sightings need Supabase** — Without env vars, logging is disabled. With anonymous auth, data is tied to the browser session unless you add full user accounts later.
+3. **localStorage size** — N/A for sightings (Postgres). Location/algorithm prefs still use localStorage.
 4. **Archive API** — Historical weather for old sightings depends on Open-Meteo archive availability and may fail for very recent or future-dated entries.
 5. **IP geolocation** — Approximate only; third-party service (ipwho.is) may rate-limit or block some networks.
 6. **GPS** — Requires HTTPS (or localhost) for reliable browser geolocation.
@@ -564,6 +551,7 @@ Work on this repository proceeded in roughly this order:
 | **Hybrid v2** | Literature scoring module, bibliography, RF + literature fusion |
 | **Sightings + SQLite** | sql.js database, sighting modal, weather snapshot on log, local calibration in scoring |
 | **sql.js fix** | Correct Vite import path for wasm build (fixes white screen on load) |
+| **Supabase migration** | Replaced sql.js with Supabase Postgres, anonymous auth, RLS, env-based config |
 
 ### Git commits (as of initial documentation)
 
@@ -594,4 +582,4 @@ When distributing builds that include the nuptialflight models, comply with **GP
 
 ---
 
-*Last updated to reflect the codebase as of the sightings database and local calibration feature set.*
+*Last updated to reflect the Supabase sightings backend.*

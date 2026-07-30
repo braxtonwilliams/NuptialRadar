@@ -38,7 +38,8 @@ import {
   reverseGeocode,
   searchLocations,
 } from './weather';
-import { initDatabase } from './db/database';
+import { initSupabase } from './db/supabase';
+import { refreshSightingsCache } from './db/sightings';
 import {
   bindSightingsModal,
   openSightingsModal,
@@ -921,7 +922,8 @@ async function init(): Promise<void> {
   loadSavedAlgorithmId();
   showLoading('Loading prediction models…');
   try {
-    await Promise.all([ensureModelsLoaded(), initDatabase()]);
+    await Promise.all([ensureModelsLoaded(), initSupabase()]);
+    await refreshSightingsCache();
     const saved = loadSavedLocation();
     if (saved) {
       await loadLocation(saved.lat, saved.lon, saved.name);

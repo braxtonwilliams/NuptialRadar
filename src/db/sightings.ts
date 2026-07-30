@@ -1,97 +1,132 @@
-import type { SqlValue } from 'sql.js';
-import { getDatabase, persistDatabase } from './database';
+import { getSupabase, isSupabaseConfigured, isSupabaseReady } from './supabase';
 import type { NewSightingInput, SightingKind, SightingRecord, WeatherSnapshot } from './types';
 
-function rowToRecord(row: Record<string, SqlValue>): SightingRecord {
+interface SightingRow {
+  id: number;
+  kind: SightingKind;
+  latitude: number;
+  longitude: number;
+  observed_at: string;
+  species: string | null;
+  size_mm: number | null;
+  temp_c: number | null;
+  humidity_pct: number | null;
+  wind_ms: number | null;
+  pop: number | null;
+  cloud_pct: number | null;
+  pressure_hpa: number | null;
+  dew_point_c: number | null;
+  notes: string | null;
+  created_at: string;
+}
+
+let calibrationCache: SightingRecord[] = [];
+
+function rowToRecord(row: SightingRow): SightingRecord {
   return {
-    id: row.id as number,
-    kind: row.kind as SightingKind,
-    latitude: row.latitude as number,
-    longitude: row.longitude as number,
-    observedAt: row.observed_at as string,
-    species: (row.species as string | null) ?? null,
-    sizeMm: (row.size_mm as number | null) ?? null,
-    tempC: (row.temp_c as number | null) ?? null,
-    humidityPct: (row.humidity_pct as number | null) ?? null,
-    windMs: (row.wind_ms as number | null) ?? null,
-    pop: (row.pop as number | null) ?? null,
-    cloudPct: (row.cloud_pct as number | null) ?? null,
-    pressureHpa: (row.pressure_hpa as number | null) ?? null,
-    dewPointC: (row.dew_point_c as number | null) ?? null,
-    notes: (row.notes as string | null) ?? null,
-    createdAt: row.created_at as string,
+    id: row.id,
+    kind: row.kind,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    observedAt: row.observed_at,
+    species: row.species,
+    sizeMm: row.size_mm,
+    tempC: row.temp_c,
+    humidityPct: row.humidity_pct,
+    windMs: row.wind_ms,
+    pop: row.pop,
+    cloudPct: row.cloud_pct,
+    pressureHpa: row.pressure_hpa,
+    dewPointC: row.dew_point_c,
+    notes: row.notes,
+    createdAt: row.created_at,
   };
 }
 
-export function insertSighting(input: NewSightingInput): SightingRecord {
-  const db = getDatabase();
-  const w = input.weather;
+async function fetchSightingsFromRemote(limit: number): Promise<SightingRecord[]> {
+  if (!isSupabaseConfigured() || !isSupabaseReady()) return [];
 
-  db.run(
-    `INSERT INTO sightings (
-      kind, latitude, longitude, observed_at, species, size_mm,
-      temp_c, humidity_pct, wind_ms, pop, cloud_pct, pressure_hpa, dew_point_c, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      input.kind,
-      input.latitude,
-      input.longitude,
-      input.observedAt.toISOString(),
-      input.species?.trim() || null,
-      input.sizeMm ?? null,
-      w?.tempC ?? null,
-      w?.humidityPct ?? null,
-      w?.windMs ?? null,
-      w?.pop ?? null,
-      w?.cloudPct ?? null,
-      w?.pressureHpa ?? null,
-      w?.dewPointC ?? null,
-      input.notes?.trim() || null,
-    ],
-  );
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('sightings')
+    .select('*')
+    .order('observed_at', { ascending: false })
+    .limit(limit);
 
-  persistDatabase();
-
-  const idResult = db.exec('SELECT last_insert_rowid() AS id');
-  const id = idResult[0]?.values[0]?.[0] as number;
-  return getSightingById(id)!;
+  if (error) throw new Error(error.message);
+  return (data as SightingRow[]).map(rowToRecord);
 }
 
-export function getSightingById(id: number): SightingRecord | null {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT * FROM sightings WHERE id = ?');
-  stmt.bind([id]);
-  if (!stmt.step()) {
-    stmt.free();
-    return null;
-  }
-  const record = rowToRecord(stmt.getAsObject() as Record<string, SqlValue>);
-  stmt.free();
-  return record;
+export async function refreshSightingsCache(): Promise<void> {
+  calibrationCache = await fetchSightingsFromRemote(500);
+}
+
+export function getSightingsForCalibration(): SightingRecord[] {
+  return calibrationCache;
 }
 
 export function listSightings(limit = 100): SightingRecord[] {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT * FROM sightings ORDER BY observed_at DESC LIMIT ?');
-  stmt.bind([limit]);
-  const rows: SightingRecord[] = [];
-  while (stmt.step()) {
-    rows.push(rowToRecord(stmt.getAsObject() as Record<string, SqlValue>));
-  }
-  stmt.free();
-  return rows;
+  return calibrationCache.slice(0, limit);
 }
 
-export function deleteSighting(id: number): void {
-  const db = getDatabase();
-  db.run('DELETE FROM sightings WHERE id = ?', [id]);
-  persistDatabase();
+export async function insertSighting(input: NewSightingInput): Promise<SightingRecord> {
+  if (!isSupabaseConfigured() || !isSupabaseReady()) {
+    throw new Error('Sightings storage is not configured.');
+  }
+
+  const supabase = getSupabase();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not signed in — reload and try again.');
+
+  const w = input.weather;
+  const { data, error } = await supabase
+    .from('sightings')
+    .insert({
+      user_id: user.id,
+      kind: input.kind,
+      latitude: input.latitude,
+      longitude: input.longitude,
+      observed_at: input.observedAt.toISOString(),
+      species: input.species?.trim() || null,
+      size_mm: input.sizeMm ?? null,
+      temp_c: w?.tempC ?? null,
+      humidity_pct: w?.humidityPct ?? null,
+      wind_ms: w?.windMs ?? null,
+      pop: w?.pop ?? null,
+      cloud_pct: w?.cloudPct ?? null,
+      pressure_hpa: w?.pressureHpa ?? null,
+      dew_point_c: w?.dewPointC ?? null,
+      notes: input.notes?.trim() || null,
+    })
+    .select('*')
+    .single();
+
+  if (error) throw new Error(error.message);
+
+  const record = rowToRecord(data as SightingRow);
+  calibrationCache = [record, ...calibrationCache.filter((s) => s.id !== record.id)].slice(
+    0,
+    500,
+  );
+  return record;
+}
+
+export async function deleteSighting(id: number): Promise<void> {
+  if (!isSupabaseConfigured() || !isSupabaseReady()) {
+    throw new Error('Sightings storage is not configured.');
+  }
+
+  const supabase = getSupabase();
+  const { error } = await supabase.from('sightings').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+
+  calibrationCache = calibrationCache.filter((s) => s.id !== id);
 }
 
 export function getSightingsCount(): number {
-  const db = getDatabase();
-  const result = db.exec('SELECT COUNT(*) AS c FROM sightings');
-  return (result[0]?.values[0]?.[0] as number) ?? 0;
+  return calibrationCache.length;
 }
 
 export function sightingWeatherSnapshot(record: SightingRecord): WeatherSnapshot | null {
@@ -117,8 +152,4 @@ export function formatSightingLabel(record: SightingRecord): string {
   const taxon = record.species || (record.sizeMm != null ? `${record.sizeMm} mm queen` : 'Unknown species');
   const kind = record.kind === 'queen_capture' ? 'Queen' : 'Flight';
   return `${kind} · ${taxon} · ${when}`;
-}
-
-export function getSightingsForCalibration(): SightingRecord[] {
-  return listSightings(500);
 }
