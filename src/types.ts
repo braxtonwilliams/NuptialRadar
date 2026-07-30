@@ -64,7 +64,7 @@ export interface DayForecast {
   weather: DailyWeather;
   sizePercentages: Record<'small' | 'medium' | 'large', number>;
   flightText: string;
-  /** Any hourly window that day scored ≥60%. */
+  /** Any hourly window that day scored ≥ green threshold (55%). */
   hasGreenSlot: boolean;
   isEstimate?: boolean;
 }

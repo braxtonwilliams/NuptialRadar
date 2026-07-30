@@ -1,6 +1,7 @@
 import type { DailyWeather, GeocodeResult, HourlyWeather, WeatherData } from './types';
 import type { WeatherSnapshot } from './db/types';
 import { FORECAST_DAY_LIMIT } from './types';
+import { buildGeocodingCandidates } from './geocoding-query';
 
 const WEATHER_CODES: Record<number, string> = {
   0: 'Clear sky',
@@ -112,13 +113,13 @@ function moonPhaseFromDate(date: Date): number {
   return ((days % synodic) + synodic) % synodic / synodic;
 }
 
-export async function searchLocations(query: string): Promise<GeocodeResult[]> {
-  if (!query.trim()) return [];
+async function fetchGeocodeResults(name: string, countryCode?: string): Promise<GeocodeResult[]> {
   const url = new URL('https://geocoding-api.open-meteo.com/v1/search');
-  url.searchParams.set('name', query.trim());
+  url.searchParams.set('name', name);
   url.searchParams.set('count', '8');
   url.searchParams.set('language', 'en');
   url.searchParams.set('format', 'json');
+  if (countryCode) url.searchParams.set('countryCode', countryCode);
 
   const res = await fetch(url);
   if (!res.ok) throw new Error('Location search failed');
@@ -132,6 +133,24 @@ export async function searchLocations(query: string): Promise<GeocodeResult[]> {
       admin1: r.admin1,
     }),
   );
+}
+
+export async function searchLocations(query: string): Promise<GeocodeResult[]> {
+  if (!query.trim()) return [];
+
+  const candidates = buildGeocodingCandidates(query);
+  const tried = new Set<string>();
+
+  for (const { query: candidateQuery, countryCode } of candidates) {
+    const key = `${candidateQuery.toLowerCase()}|${countryCode ?? ''}`;
+    if (tried.has(key)) continue;
+    tried.add(key);
+
+    const results = await fetchGeocodeResults(candidateQuery, countryCode);
+    if (results.length > 0) return results;
+  }
+
+  return [];
 }
 
 export async function reverseGeocode(lat: number, lon: number): Promise<string> {

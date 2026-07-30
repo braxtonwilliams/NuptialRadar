@@ -149,7 +149,7 @@ NuptialRadar/
 
 ### Multi-range forecast
 
-- **24 Hour** — Compact color strip for the next 24 hours; highlights green windows (≥60%)
+- **24 Hour** — Compact color strip for the next 24 hours; highlights green windows (≥55%)
 - **7 Day** — Daily cards for the current week; click a day for hourly chart and weather detail
 - **Month** — Full calendar for the current month (only shown if at least one hourly slot in the live forecast reaches green)
 
@@ -166,7 +166,7 @@ When a day is selected (7-day or month view):
 ### Confidence display
 
 - Toggle between **emoji** and **percentage** display (% / 🐜 button, top-right)
-- Color scale: red &lt;50%, amber 50–59%, green ≥60%
+- Color scale: red &lt;50%, amber 50–54%, green ≥55%
 - Emoji ladder: 👎 🤏 🤞 🐜👌 🐜👍 🐜💪 🐜🫶
 
 ### Best Day badge
@@ -175,7 +175,7 @@ On the 7-day view, **Best day** appears only on the day with the highest daily p
 
 ### Green hourly indicator
 
-Days with any hourly slot ≥60% show a 🟢 on day cards and month cells.
+Days with any hourly slot ≥55% show a 🟢 on day cards and month cells.
 
 ### Algorithm switcher
 
@@ -209,7 +209,16 @@ Main forecast location uses city search or IP approximate only (no browser GPS).
 
 ### Search
 
-`searchLocations()` calls the Open-Meteo Geocoding API with debounced input (300 ms). Results show city, region, and country.
+`searchLocations()` calls the Open-Meteo Geocoding API with **query normalization** (`geocoding-query.ts`):
+
+- **Place prefixes:** `ft`/`st`/`mt`/`pt`/`lk`/`ste` → Fort, Saint, Mount, Point, Lake, Sainte (periods stripped: `St.` → `St`)
+- **US states:** `ft smith arkansas` → `Fort smith, Arkansas`, `Fort smith`
+- **US territories:** `St Thomas USVI` → `Saint Thomas, VI` (+ `countryCode=VI`); also **PR**, **GU**, **AS**, **MP**
+- **USVI islands:** St Thomas, St Croix, St John map to their island admin regions
+
+**`location-search-ui.ts`** binds search once at startup via document-level event delegation, debounces input (~280 ms), shows an autocomplete dropdown, and supports keyboard navigation (↑/↓, Enter, Escape). Selecting a result calls `loadLocation()`.
+
+The search bar lives in a **sticky top row** below the floating toolbar (all layouts), so it is never covered by the fixed control buttons on mobile. In compact mode, the current location appears as a label above the search field.
 
 ### Reverse geocode
 
@@ -281,7 +290,7 @@ The UI renders:
 
 - **Card color/emoji** — peak hourly score that day (matches the hourly chart)
 - **`dailyModelPercentage`** — daily RF model score (shown as “Day overall” in detail, like nuptialflight)
-- `hasGreenSlot` — whether any hourly score that day ≥60%
+- `hasGreenSlot` — whether any hourly score that day ≥55%
 - Size-class percentages and flight text derived from the peak hourly score
 
 ### Hourly charts
@@ -297,7 +306,7 @@ Bar **height and color** both use the absolute hourly percentage (0–100%), mat
 - **🟢** — day has a green hourly slot (live days only)
 - Clicking a cell selects that day for the detail panel
 
-The Month tab is **hidden** unless `hasGreenTimeSlot()` is true for the loaded hourly scores (at least one ≥60% slot exists in the live forecast).
+The Month tab is **hidden** unless `hasGreenTimeSlot()` is true for the loaded hourly scores (at least one ≥55% slot exists in the live forecast).
 
 ---
 
@@ -314,7 +323,7 @@ All scoring flows through `src/algorithms/scoring.ts`, which:
 
 | Threshold | Value | Meaning |
 |-----------|-------|---------|
-| Green | ≥ 60% | Flight likely |
+| Green | ≥ 55% | Flight likely |
 | Amber | ≥ 50% | Flight possible |
 | Below amber | &lt; 50% | Flight unlikely |
 
@@ -584,6 +593,8 @@ Work on this repository proceeded in roughly this order:
 | **Hourly anchor toggle** | 🕛 full day vs ⏱ from-now (nuptialflight-style 24 slots); default midnight |
 | **Open-Meteo only** | Removed OpenWeatherMap integration (paid One Call subscription); forecasts always from Open-Meteo with 2 m surface pressure |
 | **Biology insights toggle** | 🧬 display overlay: RF tree confidence, activity band, rain/window — does not change scores; removed duplicate Biology v3 algorithm |
+| **Geocoding query normalization** | Expands place prefixes (`ft`/`st`/`mt`/`pt`), US state/territory suffixes (`USVI`, `PR`, `VI`, state abbreviations), and USVI island names; uses Open-Meteo `countryCode` when helpful |
+| **Green threshold 55%** | Lowered from 60% so tropical forecasts (e.g. USVI) with RF scores in the high 50s show green day/hour windows |
 
 ### Git commits (as of initial documentation)
 

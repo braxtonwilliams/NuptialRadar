@@ -211,7 +211,48 @@ a {
 
 .location-bar {
   display: flex;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.location-current {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.location-search-sticky {
+  position: relative;
+  z-index: 350;
+  margin-bottom: 0.65rem;
+  padding-right: min(15rem, 52vw);
+}
+
+html[data-simple="true"] .location-search-sticky {
+  margin-top: calc(max(0.35rem, env(safe-area-inset-top, 0px)) + 3.25rem);
+}
+
+html:not([data-simple="true"]) .location-search-sticky {
+  margin-top: calc(max(0.75rem, env(safe-area-inset-top, 0px)) + 3.5rem);
+}
+
+html[data-simple="true"] .location-search-compact .search-wrap {
+  z-index: 350;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .search-wrap {
@@ -219,7 +260,8 @@ a {
   position: relative;
 }
 
-#location-search {
+#location-search,
+#prompt-search {
   width: 100%;
   padding: 0.75rem 1rem;
   border: 1px solid var(--border);
@@ -227,10 +269,15 @@ a {
   background: var(--bg-card);
   color: var(--text);
   font: inherit;
-  font-size: 0.95rem;
+  font-size: 16px;
+  min-height: 44px;
+  touch-action: manipulation;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
-#location-search:focus {
+#location-search:focus,
+#prompt-search:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -244,7 +291,7 @@ a {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  z-index: 100;
+  z-index: 400;
   max-height: 280px;
   overflow-y: auto;
 }
@@ -258,17 +305,26 @@ a {
   flex-direction: column;
   align-items: flex-start;
   width: 100%;
-  padding: 0.75rem 1rem;
+  padding: 0.85rem 1rem;
+  min-height: 44px;
   border: none;
   background: none;
   color: var(--text);
   font: inherit;
   text-align: left;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.search-result:hover {
+.search-result:hover,
+.search-result.search-result-active {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.search-result.search-result-active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .search-result span {
@@ -1243,32 +1299,39 @@ html[data-theme="light"] .month-cell.has-green {
 
 @media (max-width: 600px) {
   .header-top {
-    padding-right: 0.5rem;
+    padding-right: min(15rem, 52vw);
   }
 
   .floating-controls {
-    left: max(0.5rem, env(safe-area-inset-left, 0px));
+    left: auto;
     right: max(0.5rem, env(safe-area-inset-right, 0px));
-    align-items: stretch;
+    align-items: flex-end;
   }
 
   .header-actions {
-    max-width: none;
-    width: 100%;
-    justify-content: center;
-  }
-
-  /* Compact layout: fixed toolbar must not cover location search */
-  html[data-simple="true"] {
-    --mobile-toolbar-offset: calc(max(0.35rem, env(safe-area-inset-top, 0px)) + 3.1rem);
+    width: auto;
+    max-width: calc(100vw - 1rem);
+    justify-content: flex-end;
   }
 
   html[data-simple="true"] .header {
-    padding-top: var(--mobile-toolbar-offset);
+    padding-top: 0;
+  }
+
+  .location-search-sticky {
+    padding-right: min(14rem, 48vw);
+  }
+
+  html[data-simple="true"] .location-search-sticky {
+    margin-top: calc(max(0.35rem, env(safe-area-inset-top, 0px)) + 3.5rem);
+  }
+
+  html:not([data-simple="true"]) .location-search-sticky {
+    margin-top: calc(max(0.35rem, env(safe-area-inset-top, 0px)) + 3.75rem);
   }
 
   html[data-simple="true"] .search-results {
-    z-index: 350;
+    z-index: 450;
   }
 
   .today-scores {
@@ -1611,8 +1674,9 @@ html[data-simple="true"] .location-bar {
 }
 
 html[data-simple="true"] .location-bar input {
-  padding: 0.4rem 0.55rem;
-  font-size: 0.78rem;
+  padding: 0.55rem 0.65rem;
+  font-size: 16px;
+  min-height: 44px;
 }
 
 html[data-simple="true"] .view-switcher {

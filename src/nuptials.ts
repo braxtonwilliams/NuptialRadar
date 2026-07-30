@@ -1,7 +1,8 @@
 import { getDailyModel, getHourlyModel } from './forest-model';
 import type { DailyWeather, HourlyWeather } from './types';
 
-export const GREEN_THRESHOLD = 60;
+/** Flight "likely" — tuned to 55% so tropical Open-Meteo scores (often high-50s) still show green. */
+export const GREEN_THRESHOLD = 55;
 export const AMBER_THRESHOLD = 50;
 
 const SIZE_SEASONAL_N: Record<string, number[]> = {
@@ -202,7 +203,7 @@ export function percentageToInt(prob: number): number {
 export function getEmoji(percentage: number): string {
   if (percentage < 45) return '👎';
   if (percentage < 50) return '🤏';
-  if (percentage < 55) return '🤞';
+  if (percentage < GREEN_THRESHOLD) return '🤞';
   if (percentage < 60) return '🐜👌';
   if (percentage < 65) return '🐜👍';
   if (percentage < 70) return '🐜💪';

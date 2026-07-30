@@ -30,15 +30,20 @@ import {
   hasGreenTimeSlot,
   type ForecastView,
 } from './forecast-views';
-import type { DayForecast, GeocodeResult, WeatherData } from './types';
+import type { DayForecast, WeatherData } from './types';
 import { FORECAST_DAY_LIMIT } from './types';
 import {
   fetchApproximateLocation,
   fetchWeather,
   geolocationHint,
   getHourlyWindow,
-  searchLocations,
 } from './weather';
+import {
+  bindLocationSearchInputs,
+  initLocationSearch,
+  renderLocationSearchBar,
+  renderPromptLocationSearch,
+} from './location-search-ui';
 import { initSupabase } from './db/supabase';
 import { refreshSightingsCache } from './db/sightings';
 import {
@@ -69,7 +74,6 @@ let forecastView: ForecastView = '7d';
 let showPercentages = false;
 let algorithmToast: string | null = null;
 let algorithmToastTimer: ReturnType<typeof setTimeout> | null = null;
-let searchTimeout: ReturnType<typeof setTimeout> | null = null;
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
@@ -613,7 +617,7 @@ function renderMonthView(): string {
         <p class="summary-text">
           ${
             greenDays > 0
-              ? `<strong>${greenDays}</strong> day${greenDays === 1 ? '' : 's'} with a green hourly window (≥60%).`
+              ? `<strong>${greenDays}</strong> day${greenDays === 1 ? '' : 's'} with a green hourly window (≥${getGreenThreshold()}%).`
               : 'No green hourly windows in the live forecast this month.'
           }
           <span class="summary-sub">
@@ -765,6 +769,8 @@ function render(): void {
       ${algorithmToast ? `<div class="algorithm-toast" role="status">${algorithmToast}</div>` : ''}
     </div>
 
+    <div class="location-search-sticky">${renderLocationSearchBar(weather.locationName, getSimpleMode())}</div>
+
     <header class="header ${getSimpleMode() ? 'header-compact' : ''}">
       <div class="header-top">
         <div class="brand">
@@ -773,18 +779,6 @@ function render(): void {
             <h1>Nuptial Radar</h1>
             ${getSimpleMode() ? '' : '<p class="tagline">Ant nuptial flight predictor</p>'}
           </div>
-        </div>
-      </div>
-
-      <div class="location-bar">
-        <div class="search-wrap">
-          <input
-            id="location-search"
-            type="search"
-            placeholder="${getSimpleMode() ? weather.locationName : 'Search for a city…'}"
-            autocomplete="off"
-          />
-          <div id="search-results" class="search-results hidden"></div>
         </div>
       </div>
 
@@ -803,7 +797,7 @@ function render(): void {
         <p class="legend-note">
           Based on the
           <a href="https://github.com/bradrushworth/nuptialflight" target="_blank" rel="noopener">nuptialflight</a>
-          random-forest models. Red &lt;50%, amber 50–59%, green ≥60%.
+          random-forest models. Red &lt;50%, amber 50–54%, green ≥${getGreenThreshold()}%.
           Log sightings with 📝 to calibrate forecasts using your local flight history.
         </p>
       </section>
@@ -817,6 +811,7 @@ function render(): void {
 
   bindEvents();
   bindSightingsModal();
+  bindLocationSearchInputs();
 }
 
 function bindEvents(): void {
@@ -888,78 +883,6 @@ function bindEvents(): void {
     );
     render();
   });
-
-  const searchInput = document.getElementById('location-search') as HTMLInputElement;
-  searchInput?.addEventListener('input', () => {
-    if (searchTimeout) clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(() => handleSearch(searchInput.value), 300);
-  });
-
-  searchInput?.addEventListener('focus', () => {
-    if (searchInput.value.trim()) handleSearch(searchInput.value);
-  });
-
-  document.addEventListener(
-    'click',
-    (e) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest('.search-wrap')) {
-        document.getElementById('search-results')?.classList.add('hidden');
-      }
-    },
-    { once: true },
-  );
-}
-
-async function handleSearch(query: string): Promise<void> {
-  const resultsEl = document.getElementById('search-results');
-  if (!resultsEl) return;
-
-  if (!query.trim()) {
-    resultsEl.classList.add('hidden');
-    resultsEl.innerHTML = '';
-    return;
-  }
-
-  try {
-    const results = await searchLocations(query);
-    if (results.length === 0) {
-      resultsEl.innerHTML = '<div class="search-empty">No locations found</div>';
-    } else {
-      resultsEl.innerHTML = results
-        .map(
-          (r) => `
-        <button class="search-result" data-lat="${r.lat}" data-lon="${r.lon}" data-name="${escapeAttr(formatLocationName(r))}">
-          <strong>${r.name}</strong>
-          <span>${[r.admin1, r.country].filter(Boolean).join(', ')}</span>
-        </button>`,
-        )
-        .join('');
-
-      resultsEl.querySelectorAll('.search-result').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const el = btn as HTMLElement;
-          const lat = Number(el.dataset.lat);
-          const lon = Number(el.dataset.lon);
-          const name = el.dataset.name ?? '';
-          resultsEl.classList.add('hidden');
-          loadLocation(lat, lon, name);
-        });
-      });
-    }
-    resultsEl.classList.remove('hidden');
-  } catch {
-    resultsEl.innerHTML = '<div class="search-empty">Search failed</div>';
-    resultsEl.classList.remove('hidden');
-  }
-}
-
-function formatLocationName(r: GeocodeResult): string {
-  return [r.name, r.admin1, r.country].filter(Boolean).join(', ');
-}
-
-function escapeAttr(s: string): string {
-  return s.replace(/"/g, '&quot;');
 }
 
 function saveLocation(loc: SavedLocation): void {
@@ -1002,16 +925,7 @@ function showLocationPrompt(notice?: string): void {
       <p class="location-hint">${geolocationHint()}</p>
 
       <div class="prompt-actions">
-        <div class="search-wrap search-wrap-prominent">
-          <input
-            id="prompt-search"
-            type="search"
-            placeholder="Search for your city…"
-            autocomplete="off"
-            autofocus
-          />
-          <div id="prompt-results" class="search-results hidden"></div>
-        </div>
+        ${renderPromptLocationSearch()}
         <div class="prompt-buttons">
           <button id="prompt-ip-btn" class="btn-primary">Use approximate location</button>
         </div>
@@ -1019,54 +933,10 @@ function showLocationPrompt(notice?: string): void {
     </div>`;
 
   document.getElementById('prompt-ip-btn')?.addEventListener('click', () => {
-    loadFromApproximate();
+    void loadFromApproximate();
   });
 
-  const input = document.getElementById('prompt-search') as HTMLInputElement;
-  input?.addEventListener('input', () => {
-    if (searchTimeout) clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(() => handlePromptSearch(input.value), 300);
-  });
-  input?.focus();
-}
-
-async function handlePromptSearch(query: string): Promise<void> {
-  const resultsEl = document.getElementById('prompt-results');
-  if (!resultsEl) return;
-
-  if (!query.trim()) {
-    resultsEl.classList.add('hidden');
-    resultsEl.innerHTML = '';
-    return;
-  }
-
-  try {
-    const results = await searchLocations(query);
-    if (results.length === 0) {
-      resultsEl.innerHTML = '<div class="search-empty">No locations found</div>';
-    } else {
-      resultsEl.innerHTML = results
-        .map(
-          (r) => `
-        <button class="search-result" data-lat="${r.lat}" data-lon="${r.lon}" data-name="${escapeAttr(formatLocationName(r))}">
-          <strong>${r.name}</strong>
-          <span>${[r.admin1, r.country].filter(Boolean).join(', ')}</span>
-        </button>`,
-        )
-        .join('');
-
-      resultsEl.querySelectorAll('.search-result').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const el = btn as HTMLElement;
-          loadLocation(Number(el.dataset.lat), Number(el.dataset.lon), el.dataset.name);
-        });
-      });
-    }
-    resultsEl.classList.remove('hidden');
-  } catch {
-    resultsEl.innerHTML = '<div class="search-empty">Search failed</div>';
-    resultsEl.classList.remove('hidden');
-  }
+  bindLocationSearchInputs();
 }
 
 function showLoading(message: string): void {
@@ -1104,11 +974,19 @@ async function loadFromApproximate(): Promise<void> {
 }
 
 async function init(): Promise<void> {
+  initLocationSearch((lat, lon, name) => {
+    void loadLocation(lat, lon, name);
+  });
   loadSavedAlgorithmId();
   showLoading('Loading prediction models…');
   try {
-    await Promise.all([ensureModelsLoaded(), initSupabase()]);
-    await refreshSightingsCache();
+    await ensureModelsLoaded();
+    try {
+      await initSupabase();
+      await refreshSightingsCache();
+    } catch (e) {
+      console.warn('Sightings sync unavailable:', e);
+    }
     const saved = loadSavedLocation();
     if (saved) {
       await loadLocation(saved.lat, saved.lon, saved.name);
