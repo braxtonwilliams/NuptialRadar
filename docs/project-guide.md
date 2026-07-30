@@ -195,9 +195,11 @@ When sightings exist near the current location, a green note appears under the l
 ### Location
 
 - City search (Open-Meteo geocoding)
-- GPS button (📍)
+- **Approximate location** from IP on first visit or via button on the location picker
 - Saved location restored on return visit
-- Startup: saved location → quiet GPS → IP approximate → location picker
+- Startup: saved location → IP approximate → location picker (search or approximate)
+
+Main forecast location uses city search or IP approximate only (no browser GPS).
 
 ---
 
@@ -209,19 +211,15 @@ When sightings exist near the current location, a green note appears under the l
 
 ### Reverse geocode
 
-After GPS or coordinate entry, `reverseGeocode()` resolves a human-readable place name.
+`reverseGeocode()` resolves a human-readable place name from coordinates.
 
-### GPS
+### IP approximate location
 
-`getCurrentPosition()` uses the browser Geolocation API with a 10 s timeout and 12 s overall timer. `enableHighAccuracy` is false for faster results.
-
-### IP fallback
-
-`fetchApproximateLocation()` calls `https://ipwho.is/` when GPS fails or is unavailable.
+`fetchApproximateLocation()` calls `https://ipwho.is/` for a network-based estimate.
 
 ### Hints
 
-On non-HTTPS pages, the app explains that precise GPS may be blocked and suggests search or IP fallback.
+The location picker offers city search or approximate location from your network.
 
 ### Saved location
 
@@ -456,22 +454,25 @@ If no nearby matches or boost ≤ 0.05, the base model score is returned unchang
 ### Layout
 
 - Max width ~1100 px, centered
-- Dark theme default; light theme via `prefers-color-scheme: light`
+- **Dark** and **light** themes via manual toggle (`data-theme` on `<html>`)
+- **Simple / compact mode** via toggle (`data-simple="true"`) — tighter grids, smaller type, hides non-essential sections so forecasts fit on one screen
 - Radial gradient background accents
 
 ### Floating controls (fixed top-right)
 
+- **☀️ / 🌙** — toggle light and dark mode (saved to `localStorage`; first visit follows system preference)
+- **⊟ / ⊞** — compact **simple layout** (denser spacing, hides legend/footer/size breakdown, smaller cards — laptop and mobile)
 - **% / 🐜** — toggle numeric vs emoji display
 - **🌲 / 📖** — cycle prediction algorithm
 - **📝** — open sighting modal (badge shows record count)
 
-Controls use backdrop blur and stay visible while scrolling.
+On mobile, controls wrap in a full-width bar under the safe area.
 
 ### Loading and error states
 
 - **Loading screen** — spinner + message during model load, weather fetch, GPS
 - **Error screen** — message + retry + choose location
-- **Location prompt** — full-screen picker with search, GPS, and IP approximate buttons
+- **Location prompt** — full-screen picker with search and approximate location
 
 ### Month view legend
 
@@ -486,6 +487,8 @@ Controls use backdrop blur and stay visible while scrolling.
 |-----|---------|
 | `nuptial-radar-location` | `{ lat, lon, name }` — last selected place |
 | `nuptial-radar-algorithm` | Active algorithm ID (`forest-v1` or `hybrid-literature-v2`) |
+| `nuptial-radar-theme` | `light` or `dark` |
+| `nuptial-radar-simple` | `true` when compact layout is enabled |
 
 Supabase auth session is managed by `@supabase/supabase-js` (not a custom localStorage key). Sightings live in Postgres.
 
@@ -552,6 +555,7 @@ Work on this repository proceeded in roughly this order:
 | **Sightings + SQLite** | sql.js database, sighting modal, weather snapshot on log, local calibration in scoring |
 | **sql.js fix** | Correct Vite import path for wasm build (fixes white screen on load) |
 | **Supabase migration** | Replaced sql.js with Supabase Postgres, anonymous auth, RLS, env-based config |
+| **Display preferences** | Light/dark toggle and compact simple layout (mobile + desktop), persisted in localStorage |
 
 ### Git commits (as of initial documentation)
 

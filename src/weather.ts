@@ -303,40 +303,58 @@ export async function fetchApproximateLocation(): Promise<ApproximateLocation | 
   }
 }
 
-export function getCurrentPosition(): Promise<GeolocationPosition> {
+export async function geolocationPermissionState(): Promise<PermissionState | 'unsupported'> {
+  if (!navigator.permissions?.query) return 'unsupported';
+  try {
+    const status = await navigator.permissions.query({ name: 'geolocation' });
+    return status.state;
+  } catch {
+    return 'unsupported';
+  }
+}
+
+function requestPosition(options: PositionOptions): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error('Geolocation is not supported by your browser'));
-      return;
-    }
+    navigator.geolocation.getCurrentPosition(resolve, reject, options);
+  });
+}
 
-    const timer = window.setTimeout(() => {
-      reject(new Error('Location request timed out'));
-    }, 12000);
+/**
+ * Browser geolocation with retry. Call synchronously from a click handler
+ * (before await/showLoading) so the permission prompt keeps user activation.
+ */
+export function getCurrentPosition(): Promise<GeolocationPosition> {
+  if (!navigator.geolocation) {
+    return Promise.reject(new Error('Geolocation is not supported by your browser'));
+  }
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        window.clearTimeout(timer);
-        resolve(pos);
-      },
-      (err) => {
-        window.clearTimeout(timer);
-        reject(err);
-      },
-      {
-        enableHighAccuracy: false,
-        timeout: 10000,
-        maximumAge: 300000,
-      },
+  if (!window.isSecureContext) {
+    return Promise.reject(
+      new Error('Precise location requires HTTPS. Search for a city or use approximate location.'),
     );
+  }
+
+  const accurate: PositionOptions = {
+    enableHighAccuracy: true,
+    timeout: 12000,
+    maximumAge: 0,
+  };
+  const coarse: PositionOptions = {
+    enableHighAccuracy: false,
+    timeout: 15000,
+    maximumAge: 300000,
+  };
+
+  return requestPosition(accurate).catch((err) => {
+    if (err instanceof GeolocationPositionError && err.code === GeolocationPositionError.PERMISSION_DENIED) {
+      throw err;
+    }
+    return requestPosition(coarse);
   });
 }
 
 export function geolocationHint(): string {
-  if (!window.isSecureContext) {
-    return 'Precise location needs HTTPS. Search for a city below, or we can estimate from your network.';
-  }
-  return 'Allow location in your browser, search for a city, or use approximate location from your IP.';
+  return 'Search for your city below, or use approximate location from your network.';
 }
 
 function formatYmd(date: Date): string {

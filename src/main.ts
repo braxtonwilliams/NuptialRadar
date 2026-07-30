@@ -1,5 +1,6 @@
 import './style.css';
 import { ensureModelsLoaded } from './forest-model';
+import { getSimpleMode, getTheme, toggleSimpleMode, toggleTheme } from './display-preferences';
 import {
   findHourAtLocalTime,
   getBgColor,
@@ -33,9 +34,7 @@ import {
   fetchApproximateLocation,
   fetchWeather,
   geolocationHint,
-  getCurrentPosition,
   getHourlyForDay,
-  reverseGeocode,
   searchLocations,
 } from './weather';
 import { initSupabase } from './db/supabase';
@@ -552,6 +551,12 @@ function render(): void {
   app.innerHTML = `
     <div class="floating-controls">
       <div class="header-actions">
+        <button id="toggle-theme" class="btn-ghost" type="button" title="Switch to ${getTheme() === 'dark' ? 'light' : 'dark'} mode" aria-label="Toggle light or dark mode">
+          ${getTheme() === 'dark' ? '☀️' : '🌙'}
+        </button>
+        <button id="toggle-simple" class="btn-ghost ${getSimpleMode() ? 'btn-active' : ''}" type="button" title="${getSimpleMode() ? 'Exit compact layout' : 'Compact layout — fit more on screen'}" aria-label="Toggle compact layout">
+          ${getSimpleMode() ? '⊞' : '⊟'}
+        </button>
         <button id="toggle-mode" class="btn-ghost" title="Toggle percentage / emoji display">
           ${showPercentages ? '🐜' : '%'}
         </button>
@@ -577,12 +582,11 @@ function render(): void {
           <input
             id="location-search"
             type="search"
-            placeholder="Search city or use GPS…"
+            placeholder="Search for a city…"
             autocomplete="off"
           />
           <div id="search-results" class="search-results hidden"></div>
         </div>
-        <button id="gps-btn" class="btn-icon" title="Use my location">📍</button>
       </div>
 
       <p class="location-name">${weather.locationName}</p>
@@ -646,6 +650,16 @@ function bindEvents(): void {
     switchAlgorithm();
   });
 
+  document.getElementById('toggle-theme')?.addEventListener('click', () => {
+    toggleTheme();
+    render();
+  });
+
+  document.getElementById('toggle-simple')?.addEventListener('click', () => {
+    toggleSimpleMode();
+    render();
+  });
+
   document.getElementById('toggle-mode')?.addEventListener('click', () => {
     showPercentages = !showPercentages;
     render();
@@ -661,10 +675,6 @@ function bindEvents(): void {
       },
     );
     render();
-  });
-
-  document.getElementById('gps-btn')?.addEventListener('click', () => {
-    loadFromGps(true);
   });
 
   const searchInput = document.getElementById('location-search') as HTMLInputElement;
@@ -791,15 +801,10 @@ function showLocationPrompt(notice?: string): void {
           <div id="prompt-results" class="search-results hidden"></div>
         </div>
         <div class="prompt-buttons">
-          <button id="prompt-gps-btn" class="btn-primary">Use precise location</button>
-          <button id="prompt-ip-btn" class="btn-ghost">Use approximate location</button>
+          <button id="prompt-ip-btn" class="btn-primary">Use approximate location</button>
         </div>
       </div>
     </div>`;
-
-  document.getElementById('prompt-gps-btn')?.addEventListener('click', () => {
-    loadFromGps(true);
-  });
 
   document.getElementById('prompt-ip-btn')?.addEventListener('click', () => {
     loadFromApproximate();
@@ -876,20 +881,6 @@ async function loadLocation(lat: number, lon: number, name?: string): Promise<vo
   }
 }
 
-function gpsFailureMessage(e: unknown): string {
-  if (e instanceof GeolocationPositionError) {
-    if (e.code === GeolocationPositionError.PERMISSION_DENIED) {
-      return 'Location access was blocked. Search for your city or use approximate location.';
-    }
-    if (e.code === GeolocationPositionError.TIMEOUT) {
-      return 'Location timed out. Search for your city or use approximate location.';
-    }
-    return 'Could not determine your location. Search for your city or use approximate location.';
-  }
-  if (e instanceof Error) return e.message;
-  return 'Could not get your location. Search for your city or use approximate location.';
-}
-
 async function loadFromApproximate(): Promise<void> {
   showLoading('Estimating location from network…');
   const approx = await fetchApproximateLocation();
@@ -898,24 +889,6 @@ async function loadFromApproximate(): Promise<void> {
     return;
   }
   showLocationPrompt('Could not estimate your location automatically.');
-}
-
-async function loadFromGps(fromPrompt = false): Promise<void> {
-  showLoading('Getting your location…');
-  try {
-    const pos = await getCurrentPosition();
-    const name = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
-    await loadLocation(pos.coords.latitude, pos.coords.longitude, name);
-  } catch (e) {
-    if (!fromPrompt) {
-      const approx = await fetchApproximateLocation();
-      if (approx) {
-        await loadLocation(approx.lat, approx.lon, `${approx.name} (approx.)`);
-        return;
-      }
-    }
-    showLocationPrompt(gpsFailureMessage(e));
-  }
 }
 
 async function init(): Promise<void> {
@@ -930,18 +903,10 @@ async function init(): Promise<void> {
       return;
     }
 
-    // Try GPS quietly; fall back to IP estimate, then location picker.
-    try {
-      const pos = await getCurrentPosition();
-      const name = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
-      await loadLocation(pos.coords.latitude, pos.coords.longitude, name);
+    const approx = await fetchApproximateLocation();
+    if (approx) {
+      await loadLocation(approx.lat, approx.lon, `${approx.name} (approx.)`);
       return;
-    } catch {
-      const approx = await fetchApproximateLocation();
-      if (approx) {
-        await loadLocation(approx.lat, approx.lon, `${approx.name} (approx.)`);
-        return;
-      }
     }
 
     showLocationPrompt();

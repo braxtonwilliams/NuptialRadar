@@ -1,6 +1,6 @@
 import { deleteSighting, formatSightingLabel, insertSighting, listSightings } from './db/sightings';
 import type { SightingKind } from './db/types';
-import { fetchWeatherSnapshot, getCurrentPosition } from './weather';
+import { fetchWeatherSnapshot } from './weather';
 
 let modalOpen = false;
 let saving = false;
@@ -89,10 +89,9 @@ export function renderSightingsModal(): string {
 
           <div class="sighting-row">
             <label class="sighting-label" for="sighting-lat">Location</label>
-            <div class="sighting-location-row">
+            <div class="sighting-location-row sighting-location-row-coords">
               <input id="sighting-lat" name="lat" type="number" step="any" class="sighting-input sighting-coord" placeholder="Latitude" value="${defaults.lat.toFixed(5)}" required />
               <input id="sighting-lon" name="lon" type="number" step="any" class="sighting-input sighting-coord" placeholder="Longitude" value="${defaults.lon.toFixed(5)}" required />
-              <button type="button" class="btn-ghost sighting-inline-btn" id="sighting-gps-btn" title="Use GPS now">📍</button>
             </div>
             ${defaults.locationLabel ? `<p class="sighting-hint">Default: ${defaults.locationLabel}</p>` : ''}
           </div>
@@ -165,23 +164,6 @@ export function bindSightingsModal(): void {
   document.getElementById('sighting-now-btn')?.addEventListener('click', () => {
     const input = document.getElementById('sighting-when') as HTMLInputElement;
     if (input) input.value = toDatetimeLocalValue(new Date());
-  });
-
-  document.getElementById('sighting-gps-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('sighting-gps-btn') as HTMLButtonElement;
-    if (btn) btn.disabled = true;
-    try {
-      const pos = await getCurrentPosition();
-      const latInput = document.getElementById('sighting-lat') as HTMLInputElement;
-      const lonInput = document.getElementById('sighting-lon') as HTMLInputElement;
-      if (latInput) latInput.value = pos.coords.latitude.toFixed(5);
-      if (lonInput) lonInput.value = pos.coords.longitude.toFixed(5);
-    } catch {
-      formError = 'Could not get GPS location. Enter coordinates manually.';
-      refreshModalOnly();
-    } finally {
-      if (btn) btn.disabled = false;
-    }
   });
 
   document.querySelectorAll('.sighting-delete').forEach((el) => {
