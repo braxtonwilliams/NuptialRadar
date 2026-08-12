@@ -1,7 +1,6 @@
 /**
- * Routes all flight scoring through the active algorithm from the registry,
- * then applies local calibration (Hybrid) and optional genus timing.
- * Forest v1 + All species = raw RF (nuptialflight parity).
+ * Routes all flight scoring through Forest v1 (production),
+ * then optional genus timing. All species = raw RF (nuptialflight parity).
  */
 import { getSightingsForCalibration } from '../db/sightings';
 import { percentageToInt } from '../nuptials';
@@ -24,7 +23,6 @@ import {
   calibrationContextFromHourly,
   computeLocalBoost,
 } from './local-calibration';
-import { hybridLiteratureV2Algorithm, nuptialHourlyPercentageV2 } from './nuptials-hybrid-v2';
 import { forestV1Algorithm } from './nuptials-forest-v1';
 import { getActiveAlgorithm } from './registry';
 import {
@@ -51,6 +49,7 @@ function dailyIndexForHourly(weather: WeatherData, hourly: HourlyWeather): numbe
   return idx >= 0 ? idx : 0;
 }
 
+/** Reserved for non-Forest algorithms; Forest v1 skips local calibration. */
 function usesLocalCalibration(): boolean {
   return getActiveAlgorithm().id !== forestV1Algorithm.id;
 }
@@ -184,10 +183,7 @@ export function scoreHourlyProbability(
   hourlyIndex?: number,
 ): number {
   const algo = getActiveAlgorithm();
-  let base =
-    algo.id === hybridLiteratureV2Algorithm.id
-      ? nuptialHourlyPercentageV2(lat, lon, hourly, tzOffsetSeconds)
-      : algo.nuptialHourlyPercentage(lat, lon, hourly);
+  let base = algo.nuptialHourlyPercentage(lat, lon, hourly);
   base = finalizeHourly(base, lat, lon, hourly, tzOffsetSeconds);
 
   if (weather && hourlyIndex != null) {
@@ -196,7 +192,7 @@ export function scoreHourlyProbability(
   return applyStandaloneTiming(base, lat, hourly.dt, tzOffsetSeconds, 'hourly');
 }
 
-/** RF/hybrid + calibration only — used to rank genera without the selected-species layer. */
+/** RF + calibration only — used to rank genera without the selected-species layer. */
 export function scoreHourlyBaseProbability(
   lat: number,
   lon: number,
@@ -204,10 +200,7 @@ export function scoreHourlyBaseProbability(
   tzOffsetSeconds = 0,
 ): number {
   const algo = getActiveAlgorithm();
-  let base =
-    algo.id === hybridLiteratureV2Algorithm.id
-      ? nuptialHourlyPercentageV2(lat, lon, hourly, tzOffsetSeconds)
-      : algo.nuptialHourlyPercentage(lat, lon, hourly);
+  const base = algo.nuptialHourlyPercentage(lat, lon, hourly);
   return finalizeHourly(base, lat, lon, hourly, tzOffsetSeconds);
 }
 

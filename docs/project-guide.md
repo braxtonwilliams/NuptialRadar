@@ -32,7 +32,6 @@ This document describes everything implemented in Nuptial Radar: what the app do
 
 - **Machine-learning models** from the open-source [nuptialflight](https://github.com/bradrushworth/nuptialflight) project (random forests trained on crowd-sourced sightings)
 - **Live weather forecasts** from Open-Meteo (no API key required)
-- **Optional literature-based scoring** (hybrid v2 algorithm)
 - **User-logged sightings** stored in **Supabase Postgres** (via anonymous auth) that nudge probabilities toward conditions where flights were actually observed nearby
 
 The app is a static front-end deployed on Vercel. Weather is fetched from public APIs, models are bundled as static JSON, preferences stay in `localStorage`, and sightings sync to Supabase when configured.
@@ -51,9 +50,9 @@ Nuptial Radar uses [Open-Meteo](https://open-meteo.com/) (no API key). RF featur
 
 Scores can still differ slightly from the mobile app because the underlying weather models differ (Open-Meteo vs OpenWeatherMap). Closest comparison: **🌲 Forest v1**, **🐜 All species**, hourly anchor **⏱ from now** (now the default for new visitors). Week/day card colors use the **daily RF model**; the 24-hour histogram uses **hourly RF** scores.
 
-### Swappable algorithms without breaking production
+### Forest v1 production scoring
 
-The default **Forest v1** algorithm wraps the original nuptialflight RF scoring. With **All species**, display % matches raw RF (no extra timing multipliers). A second **Hybrid v2** algorithm blends those forests with published weather triggers (RF-weighted). Users switch models via a header button; the choice persists in `localStorage`.
+Production uses **Forest v1** only — the original nuptialflight RF scoring. With **All species**, display % matches raw RF (no extra timing multipliers). Hybrid / literature modules remain in the repo for reference but are not registered or selectable in the UI.
 
 ### Supabase for sightings
 
@@ -104,7 +103,7 @@ NuptialRadar/
 │       └── hour_model.json        # Hourly random-forest model (from nuptialflight)
 ├── src/
 │   ├── main.ts                    # App entry, UI rendering, event wiring
-│   ├── style.css                  # All styles (dark/light via prefers-color-scheme)
+│   ├── style.css                  # All styles (dark theme)
 │   ├── types.ts                   # Shared TypeScript interfaces
 │   ├── nuptials.ts                # Original RF scoring + size-seasonal logic
 │   ├── forest-model.ts            # JSON model loader and DecisionTree/Forest classes
@@ -137,7 +136,7 @@ NuptialRadar/
 |--------|------|
 | `main.ts` | Orchestrates loading, location flow, forecast rendering, floating controls |
 | `nuptials.ts` | Core nuptialflight feature engineering and RF calls; size-class seasonality |
-| `algorithms/scoring.ts` | Single entry point for all probability scores; local calibration (Hybrid) then timing/species layer |
+| `algorithms/scoring.ts` | Single entry point for all probability scores; Forest v1 then timing/species layer |
 | `species/*` | Genus catalog + geographic ranges, rain/month/hour timing, selection, selector UI |
 | `forecast-views.ts` | Builds `DayForecast` objects, month calendar cells, 24h strip data |
 | `weather.ts` | Fetches 16-day hourly forecast, climate fill for month view, archive weather for past sightings |
@@ -178,9 +177,9 @@ On the 7-day view, **Best day** appears only on the day with the highest daily p
 
 Days with any hourly slot ≥55% show a 🟢 on day cards and month cells.
 
-### Algorithm switcher
+### Biology insights
 
-Floating **🌲** (Forest v1) / **📖** (Hybrid v2) button cycles prediction models. **🧬** toggles **biology insights** (confidence, activity, rain/window context) without changing scores. A brief toast confirms the active model name.
+In **full (non-compact) layout**, day detail and the 24-hour view always show activity, RF confidence, rain context, and time window fused into the flight status / outlook — no separate toggle. Prediction always uses Forest v1.
 
 ### Species filter (🐜)
 
@@ -214,6 +213,7 @@ When sightings exist near the current location, a green note appears under the l
 - **Approximate location** from IP on first visit or via button on the location picker
 - Saved location restored on return visit
 - Startup: saved location → IP approximate → location picker (search or approximate)
+- **Nearby towns** (US): top-left **📍 Nearby** dropdown always visible; ranks towns within 25 miles vs a **fixed starting location**; green badge when any town is better; tap previews a town without changing the home origin (⌂ returns home)
 
 Main forecast location uses city search or IP approximate only (no browser GPS).
 
@@ -236,7 +236,7 @@ The search bar lives in a **sticky top row** below the floating toolbar (all lay
 
 ### Reverse geocode
 
-`reverseGeocode()` returns a display name plus a structured **`place`** (`countryCode`, `admin1`, `usState`, lat/lon). `fetchWeather()` always attaches `weather.place` for species range filtering. US territories (PR, VI, etc.) are normalized to their own country codes when reverse geocode nests them under US.
+`reverseGeocode()` uses **BigDataCloud** reverse geocode (Open-Meteo only offers forward search). It returns a display name plus a structured **`place`** (`countryCode`, `admin1`, `usState`, lat/lon). `fetchWeather()` always attaches `weather.place` for species range filtering. US territories (PR, VI, etc.) are normalized to their own country codes when reverse geocode nests them under US.
 
 ### IP approximate location
 
@@ -249,6 +249,20 @@ The location picker offers city search or approximate location from your network
 ### Saved location
 
 Key: `nuptial-radar-location` — JSON `{ lat, lon, name }`.
+
+### Nearby towns scan
+
+**Files:** `src/nearby/*`, `src/geo/distance.ts`, `fetchWeatherLite` in `weather.ts`
+
+When the forecast place is in the US (or US lat/lon band when country is still resolving):
+
+1. Discover named places via **BigDataCloud** reverse geocode at the origin and on rings (~8 / 14 / 22 mi) — Open-Meteo has no reverse geocoding API
+2. Prefer same-state hits between 2.5–25 miles (max 6 towns); if state is unknown, any US town in range. **Exclude the home locality name** so the starting city is not listed twice (BigDataCloud often labels nearby ring points as the same city).
+3. Fetch a 2-day **lite** forecast per town (independent of the on-screen location; no climate fill)
+4. Score with the current algorithm + genus selection; compare peak hourly % to a **snapshot** of home scores
+5. Cache under `nuptial-radar-nearby-scan` for **~18 hours** (keyed by origin + algorithm + species); refresh automatically on open when stale
+
+UI: top-left **📍 Nearby** control is always shown with the forecast. It opens a ranked dropdown (distance, best time, peak %, better/worse vs **home**). A green count badge appears only when at least one town beats home peak %. **Tapping a town** previews that forecast but does **not** change the starting location or rescan origin — use **⌂ home** in the list to return. A new search / GPS / approximate location sets a new home.
 
 ---
 
@@ -320,13 +334,13 @@ The Month tab is **hidden** unless `hasGreenTimeSlot()` is true for the loaded h
 
 All scoring flows through `src/algorithms/scoring.ts`, which:
 
-1. Calls the **active algorithm** from the registry
-2. Applies **local calibration** from logged sightings — **Hybrid v2 only** (Forest v1 matches nuptialflight raw model output)
+1. Calls **Forest v1** from the registry
+2. Skips **local calibration** for Forest v1 (matches nuptialflight raw model output; calibration path remains for any future non-Forest algorithm)
 3. Applies the **genus timing layer** (`species/timing.ts`) **only when a genus is selected** — season ramp (day-of-year peak/shoulders), rain lag, local hour. **All species** leaves the algorithm score unchanged (nuptialflight parity)
 
-**Biology insights** (🧬 toggle, `localStorage` key `nuptial-radar-biology-insights`) adds confidence (RF tree disagreement), activity band, rain status, and time window — **display only**; percentages always come from the active algorithm (+ genus timing when selected).
+**Biology insights** are always shown in full (non-compact) day detail and 24-hour outlook: confidence (RF tree disagreement), activity band, rain status, and time window — **display only**; percentages always come from Forest v1 (+ genus timing when selected).
 
-### Confidence thresholds (Forest v1 / Hybrid v2)
+### Confidence thresholds (Forest v1)
 
 | Threshold | Value | Meaning |
 |-----------|-------|---------|
@@ -334,10 +348,9 @@ All scoring flows through `src/algorithms/scoring.ts`, which:
 | Amber | ≥ 50% | Flight possible |
 | Below amber | &lt; 50% | Flight unlikely |
 
-### Forest v1 (production default)
+### Forest v1 (production)
 
 **ID:** `forest-v1`  
-**Icon:** 🌲  
 **File:** `nuptials-forest-v1.ts`
 
 Wraps `nuptials.ts` without modification:
@@ -356,43 +369,18 @@ Wraps `nuptials.ts` without modification:
 
 Loaded once at startup via `ensureModelsLoaded()` in `forest-model.ts`.
 
-### Hybrid v2 (literature + RF)
+### Hybrid v2 (legacy / not in UI)
 
 **ID:** `hybrid-literature-v2`  
-**Icon:** 📖  
-**File:** `nuptials-hybrid-v2.ts`
+**Files:** `nuptials-hybrid-v2.ts`, `literature-scoring.ts` (not registered)
 
-Combines RF scores with **literature-derived suitability** from `literature-scoring.ts`:
+Source remains for reference. It blended RF with literature suitability; production no longer exposes a switcher.
 
-```
-p_v2 = clamp( w_rf × p_rf + w_lit × p_lit + w_cross × p_rf × p_lit )
-```
-
-**Daily weights:** RF 0.52, literature 0.38, cross-term 0.10  
-**Hourly weights:** RF 0.48, literature 0.42, cross-term 0.10
-
-Same hard gates as v1 before fusion.
-
-**Literature terms** (see `references.ts` for bibliography):
-
-| Factor | Basis |
-|--------|--------|
-| Temperature | Boomsma 1981, Sobczak 2017 — trapezoid + Gaussian around ~22 °C |
-| Humidity | Boomsma 1981, Depa 2006 — humid days favour flight |
-| Wind / gust | Sobczak 2017 — calm air; caps match nuptialflight gates |
-| Dew-point depression | Moist air indicator |
-| Rain during hour | Active rain suppresses flight |
-| Antecedent rain | Wilson 1955, Messor 2009 — boost after moderate rain + clearing |
-| Diurnal hours | Late morning and late afternoon peaks |
-| Cloud cover | Partly cloudy to overcast often reported |
-| Pressure | Weak effect; avoid storm lows |
-| Seasonal gate | Hemisphere-aware day-of-year from Dunn 2007 / nuptialflight phenology |
-
-### Biology insights (🧬 toggle)
+### Biology insights (full layout)
 
 **Files:** `biology-insights.ts`, `biology-v3-features.ts`
 
-Not a separate scoring algorithm. When enabled, overlays on the active model (🌲 or 📖):
+Not a separate scoring algorithm. In non-compact mode, fused into day detail / 24-hour outlook:
 
 - **Confidence** — std dev of per-tree P(flight) from the bundled RF
 - **Activity** — descriptive band from the displayed % (Very Low → Exceptional)
@@ -404,7 +392,7 @@ Derived features (pressure trends, GDD, soil moisture estimate, etc.) are comput
 
 **Files:** `src/species/catalog.ts`, `range.ts`, `timing.ts`, `selection.ts`, `species-ui.ts`
 
-After RF / Hybrid scoring:
+After Forest v1 scoring:
 
 | Mode | Behavior |
 |------|----------|
@@ -472,7 +460,7 @@ If `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` are unset, sightings are disab
 ## Local calibration layer
 
 **File:** `algorithms/local-calibration.ts`  
-**Applied in:** `algorithms/scoring.ts` after base algorithm — **Hybrid v2 only** (skipped for Forest v1 so production scores match nuptialflight)
+**Applied in:** `algorithms/scoring.ts` after base algorithm — reserved for non-Forest algorithms (**skipped for Forest v1** so production scores match nuptialflight)
 
 ### Intent
 
@@ -515,21 +503,19 @@ If no nearby matches or boost ≤ 0.05, the base model score is returned unchang
 ### Layout
 
 - Max width ~1100 px, centered
-- **Dark** and **light** themes via manual toggle (`data-theme` on `<html>`)
+- **Dark theme only** (`data-theme="dark"` on `<html>`; light mode removed)
 - **Simple / compact mode** via toggle (`data-simple="true"`) — smaller header chrome, 7-day strip with tap-to-select days, and a **compact hourly panel** (11 AM / day / 7 PM scores + bar chart) below the week row; hides legend, footer, and full day-detail panel
 - Radial gradient background accents
 
 ### Floating controls (full-width top bar)
 
-- Fixed across the top of the viewport (safe-area aware), single row with larger tap targets
-- Horizontal scroll if needed on very narrow screens (no wrapping to two rows)
-- **☀️ / 🌙** — toggle light and dark mode (saved to `localStorage`; **defaults to dark** on first visit)
-- **⊟ / ⊞** — compact **simple layout** (defaults **on**): week strip + **hourly panel** for the selected day (score boxes + bar chart); tap a day to change hours — tap ⊞ for full detail, legend, and footer
-- **% / 🐜** — toggle numeric vs emoji display
-- **🌲 / 📖** — cycle prediction algorithm
-- **🧬** — biology insights overlay (display only)
-- **🐜** — genus filter / search (+ **ℹ** docs when a genus is selected)
-- **📝** — open sighting modal (badge shows record count)
+- Fixed across the top of the viewport (safe-area aware)
+- **📍 Nearby** (top left) — always visible with the forecast; opens nearby towns dropdown; green count badge when any town has a higher peak % than home; scan refreshes when cache is older than ~18h
+- Right cluster (scrollable if needed):
+  - **⊟ / ⊞** — compact **simple layout** (defaults **on**): week strip + **hourly panel** for the selected day (score boxes + bar chart); tap a day to change hours — tap ⊞ for full detail (includes biology insights), legend, and footer
+  - **% / 🐜** — toggle numeric vs emoji display
+  - **🐜** — genus filter / search (+ **ℹ** docs when a genus is selected)
+  - **📝** — open sighting modal (badge shows record count)
 
 Location search sits below the bar so controls never cover it.
 
@@ -550,12 +536,12 @@ Location search sits below the bar so controls never cover it.
 
 | Key | Content |
 |-----|---------|
-| `nuptial-radar-location` | `{ lat, lon, name }` — last selected place |
-| `nuptial-radar-algorithm` | Active algorithm ID (`forest-v1` or `hybrid-literature-v2`) |
-| `nuptial-radar-theme` | `light` or `dark` (default **dark** if unset) |
+| `nuptial-radar-location` | `{ lat, lon, name }` — saved **home** place (not updated by nearby hops) |
+| `nuptial-radar-nearby-scan` | Nearby town comparison (peaks + deltas); TTL ~18h |
+| `nuptial-radar-algorithm` | Forced to `forest-v1` on load (legacy hybrid IDs rewritten) |
+| `nuptial-radar-theme` | Forced to `dark` on load (light preference cleared) |
 | `nuptial-radar-simple` | `true` or `false` (default **true** if unset) |
 | `nuptial-radar-hourly-anchor` | `now` (default) or `midnight` |
-| `nuptial-radar-biology-insights` | `true` / `false` — 🧬 overlay |
 | `nuptial-radar-species` | Genus id (e.g. `camponotus`) or unset = All species |
 
 Supabase auth session is managed by `@supabase/supabase-js` (not a custom localStorage key). Sightings live in Postgres.
@@ -631,12 +617,18 @@ Work on this repository proceeded in roughly this order:
 | **Scoring parity (timing + MSL)** | All-species path is raw RF again; RF uses `pressure_msl`; daily enriched from hourly; genus timing is soft/peak-preserving; default hourly anchor = from now; Hybrid more RF-weighted |
 | **Green-slot species tips** | 🐜 icon above every green hour; hover lists top local genera for that slot |
 | **Seasonal flight ramps** | Genus seasons use DOY peak + ramp/fade; off-season near-zero; tips omit out-of-season genera |
+| **Nearby towns scan** | Same-state places &lt;25 mi; ~18h cache; peak % vs home; tap to switch location |
+| **Nearby top-left dropdown** | Always-visible 📍 Nearby control; green notify badge only when a town beats home; auto-init on open when cache stale |
+| **Nearby scan fix** | Replaced broken Open-Meteo reverse with BigDataCloud; scan patches nearby chrome only (does not rebuild radar until a town is clicked) |
+| **Nearby fixed home** | Starting location stays the nearby origin; town taps are previews; ⌂ returns home; saved location not overwritten by hops |
 | **Biology insights toggle** | 🧬 display overlay: RF tree confidence, activity band, rain/window — does not change scores; removed duplicate Biology v3 algorithm |
+| **Biology insights fused** | Removed 🧬 button; insights always shown in full (non-compact) day detail / 24h outlook |
 | **Geocoding query normalization** | Expands place prefixes (`ft`/`st`/`mt`/`pt`), US state/territory suffixes (`USVI`, `PR`, `VI`, state abbreviations), and USVI island names; uses Open-Meteo `countryCode` when helpful |
 | **Green threshold 55%** | Lowered from 60% so tropical forecasts (e.g. USVI) with RF scores in the high 50s show green day/hour windows |
 | **Species-aware scoring** | Genus catalog + rain/month/hour timing layer; top-bar autocomplete; best-windows panel; in-app ℹ docs |
 | **Species geographic filter** | Dropdown / badges only show genera native or established (incl. invasive) at forecast country/state |
 | **Full-width top toolbar** | Floating controls are one large top bar with larger buttons (no two-row wrap) |
+| **Lock Forest + dark** | Removed 🌲/📖 model switcher and light-mode toggle; production is Forest v1 + eternal dark |
 
 ### Git commits (as of initial documentation)
 

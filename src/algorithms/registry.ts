@@ -1,67 +1,34 @@
 /**
- * Flight algorithm registry — switched via the header algorithm button.
+ * Flight algorithm registry — production uses Forest v1 only.
  */
 import { forestV1Algorithm } from './nuptials-forest-v1';
-import { hybridLiteratureV2Algorithm } from './nuptials-hybrid-v2';
 import type { FlightAlgorithm } from './types';
 
-export const ALGORITHM_REGISTRY: FlightAlgorithm[] = [
-  forestV1Algorithm,
-  hybridLiteratureV2Algorithm,
-];
+export const ALGORITHM_REGISTRY: FlightAlgorithm[] = [forestV1Algorithm];
 
 export const DEFAULT_ALGORITHM_ID = forestV1Algorithm.id;
 
 const STORAGE_KEY = 'nuptial-radar-algorithm';
-
-let activeId = DEFAULT_ALGORITHM_ID;
-
-export function cycleAlgorithm(): FlightAlgorithm {
-  const idx = ALGORITHM_REGISTRY.findIndex((a) => a.id === activeId);
-  const next = ALGORITHM_REGISTRY[(idx + 1) % ALGORITHM_REGISTRY.length];
-  setActiveAlgorithmId(next.id);
-  return next;
-}
-
-export function getAlgorithmIcon(id: string): string {
-  switch (id) {
-    case hybridLiteratureV2Algorithm.id:
-      return '📖';
-    case forestV1Algorithm.id:
-    default:
-      return '🌲';
-  }
-}
 
 export function getAlgorithmById(id: string): FlightAlgorithm | undefined {
   return ALGORITHM_REGISTRY.find((a) => a.id === id);
 }
 
 export function getActiveAlgorithm(): FlightAlgorithm {
-  return getAlgorithmById(activeId) ?? forestV1Algorithm;
+  return forestV1Algorithm;
 }
 
 export function getActiveAlgorithmId(): string {
-  return activeId;
+  return forestV1Algorithm.id;
 }
 
-export function setActiveAlgorithmId(id: string): boolean {
-  const algo = getAlgorithmById(id);
-  if (!algo) return false;
-  activeId = id;
-  try {
-    localStorage.setItem(STORAGE_KEY, id);
-  } catch {
-    /* ignore */
-  }
-  return true;
-}
-
+/** No-op kept for startup cleanup of legacy saved hybrid IDs. */
 export function loadSavedAlgorithmId(): void {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved && getAlgorithmById(saved)) activeId = saved;
-    else if (saved === 'biology-v3') activeId = DEFAULT_ALGORITHM_ID;
+    if (saved && saved !== forestV1Algorithm.id) {
+      localStorage.setItem(STORAGE_KEY, forestV1Algorithm.id);
+    }
   } catch {
     /* ignore */
   }
@@ -81,5 +48,5 @@ export function listAlgorithms(): ReadonlyArray<{
   }));
 }
 
-export { forestV1Algorithm, hybridLiteratureV2Algorithm };
+export { forestV1Algorithm };
 export { LITERATURE_STUDIES, LITERATURE_PARAMS } from './references';

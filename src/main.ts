@@ -1,12 +1,14 @@
 import './style.css';
 import { ensureModelsLoaded } from './forest-model';
-import { getSimpleMode, getTheme, getHourlyAnchor, getBiologyInsights, hourlyAnchorLabel, toggleBiologyInsights, toggleHourlyAnchor, toggleSimpleMode, toggleTheme } from './display-preferences';
+import { getSimpleMode, getHourlyAnchor, hourlyAnchorLabel, toggleHourlyAnchor, toggleSimpleMode } from './display-preferences';
 import {
   findHourAtLocalTime,
   getEmoji,
   percentageToInt,
 } from './nuptials';
 import {
+  biologyInsightsFlightText,
+  getAmberThreshold,
   getBiologyInsightsContext,
   getDailyBiologyInsights,
   getGreenThreshold,
@@ -17,9 +19,7 @@ import {
   scoreHourlyProbability,
 } from './algorithms/scoring';
 import {
-  cycleAlgorithm,
   getActiveAlgorithm,
-  getAlgorithmIcon,
   loadSavedAlgorithmId,
 } from './algorithms/registry';
 import {
@@ -65,7 +65,26 @@ import {
   setSpeciesForecastContext,
   syncSpeciesToWeatherPlace,
 } from './species/species-ui';
-import { getSelectedSpecies, loadSavedSpeciesId } from './species/selection';
+import { getSelectedSpecies, getSelectedSpeciesId, loadSavedSpeciesId } from './species/selection';
+import {
+  getNearbyHome,
+  getNearbyHomeHourlyScores,
+  getNearbyHomeWeather,
+  isViewingNearbyHop,
+  setNearbyHomeFromWeather,
+  setViewingNearbyHop,
+  updateNearbyHomeScores,
+} from './nearby/home';
+import { canScanNearby, runNearbyScan, scrubHomeFromTowns, type NearbyScanResult } from './nearby/scan';
+import { readNearbyCache } from './nearby/cache';
+import {
+  closeNearbyPopover,
+  initNearbyUi,
+  positionNearbyPopover,
+  renderNearbyControl,
+  renderNearbyPopoverPanel,
+  type NearbyUiStatus,
+} from './nearby/nearby-ui';
 
 const STORAGE_KEY = 'nuptial-radar-location';
 
@@ -85,8 +104,9 @@ let selectedDay = 0;
 let selectedExtendedIndex: number | null = null;
 let forecastView: ForecastView = '7d';
 let showPercentages = false;
-let algorithmToast: string | null = null;
-let algorithmToastTimer: ReturnType<typeof setTimeout> | null = null;
+let nearbyStatus: NearbyUiStatus = 'idle';
+let nearbyResult: NearbyScanResult | null = null;
+let nearbyScanToken = 0;
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
@@ -103,6 +123,98 @@ function rebuildForecasts(): void {
 
   if (forecastView === 'month' && !hasGreenTimeSlot(hourlyScores)) {
     forecastView = '7d';
+  }
+}
+
+function queueNearbyScan(): void {
+  if (!weather) {
+    nearbyStatus = 'idle';
+    nearbyResult = null;
+    closeNearbyPopover();
+    return;
+  }
+
+  const homeWeatherSnap = getNearbyHomeWeather();
+  const homeScoresSnap = getNearbyHomeHourlyScores();
+  const scanWeather = isViewingNearbyHop() && homeWeatherSnap ? homeWeatherSnap : weather;
+  const scanScores =
+    isViewingNearbyHop() && homeScoresSnap.length > 0 ? homeScoresSnap : [...hourlyScores];
+
+  if (!canScanNearby(scanWeather)) {
+    nearbyStatus = 'unavailable';
+    if (!isViewingNearbyHop()) nearbyResult = null;
+    return;
+  }
+
+  const cached = readNearbyCache(
+    scanWeather.lat,
+    scanWeather.lon,
+    scanWeather.place.usState,
+    getActiveAlgorithm().id,
+    getSelectedSpeciesId(),
+  );
+  if (cached) {
+    nearbyResult = scrubHomeFromTowns(scanWeather.locationName, cached);
+    nearbyStatus = 'ready';
+    return;
+  }
+
+  // Never promote a town-hop forecast into a new home scan origin
+  if (isViewingNearbyHop() && !homeWeatherSnap) {
+    nearbyStatus = nearbyResult ? 'ready' : 'unavailable';
+    return;
+  }
+
+  const token = ++nearbyScanToken;
+  nearbyStatus = 'loading';
+  if (!isViewingNearbyHop()) nearbyResult = null;
+  patchNearbyChrome();
+
+  void (async () => {
+    try {
+      const result = await runNearbyScan(scanWeather, scanScores);
+      if (token !== nearbyScanToken) return;
+      nearbyResult = result;
+      nearbyStatus = result ? 'ready' : 'unavailable';
+      patchNearbyChrome();
+    } catch (err) {
+      console.warn('Nearby scan error:', err);
+      if (token !== nearbyScanToken) return;
+      nearbyResult = null;
+      nearbyStatus = 'error';
+      patchNearbyChrome();
+    }
+  })();
+}
+
+/** Update only the nearby control/popover so the main radar forecast stays untouched. */
+function patchNearbyChrome(): void {
+  const host = document.querySelector('.floating-controls-bar');
+  if (!host) {
+    render();
+    return;
+  }
+
+  const existing = host.querySelector('.nearby-control');
+  const nextControl = renderNearbyControl(nearbyStatus, nearbyResult);
+  if (existing) {
+    existing.outerHTML = nextControl;
+  } else if (nextControl) {
+    host.insertAdjacentHTML('afterbegin', nextControl);
+  }
+
+  const oldPop = document.getElementById('nearby-popover');
+  oldPop?.remove();
+  const popHtml = renderNearbyPopoverPanel(
+    nearbyStatus,
+    nearbyResult,
+    showPercentages,
+    weather?.lat,
+    weather?.lon,
+  );
+  if (popHtml) {
+    app.insertAdjacentHTML('beforeend', popHtml);
+    positionNearbyPopover();
   }
 }
 
@@ -266,7 +378,6 @@ function renderCompactHourlyPanel(): string {
         </div>
       </div>
       ${chart || '<p class="compact-hourly-empty">No hourly data for this day.</p>'}
-      ${dayIndex >= 0 ? renderBiologyInsightsPanel(dayIndex, null) : ''}
     </div>`;
 }
 
@@ -371,8 +482,9 @@ function scoreBgColor(pct: number): string {
   return getScoreBgColor(pct);
 }
 
+/** Activity / confidence / rain / window — always shown in full (non-compact) detail. */
 function renderBiologyInsightsPanel(dailyIndex: number | null, hourlyIndex: number | null): string {
-  if (!weather || !getBiologyInsights()) return '';
+  if (!weather || getSimpleMode()) return '';
 
   let displayPct = 0;
   let insights;
@@ -403,7 +515,7 @@ function renderBiologyInsightsPanel(dailyIndex: number | null, hourlyIndex: numb
   const activityClass = insights.activity.toLowerCase().replace(/\s+/g, '-');
 
   return `
-    <div class="v3-meta-panel">
+    <div class="detail-insights" aria-label="Flight insights">
       <div class="v3-meta-item">
         <span class="v3-meta-label">Activity</span>
         <span class="v3-meta-value v3-activity-${activityClass}">${insights.activity}</span>
@@ -417,46 +529,15 @@ function renderBiologyInsightsPanel(dailyIndex: number | null, hourlyIndex: numb
     </div>`;
 }
 
-function renderAlgorithmButton(): string {
-  const algo = getActiveAlgorithm();
-  const icon = getAlgorithmIcon(algo.id);
-  const variant = algo.id === 'hybrid-literature-v2' ? 'algorithm-btn-alt' : '';
-  return `
-    <button
-      id="algorithm-switch"
-      class="btn-ghost algorithm-btn ${variant}"
-      type="button"
-      title="Prediction model: ${algo.name}. Click to switch."
-      aria-label="Switch prediction model (${algo.name})"
-    >${icon}</button>`;
-}
-
-function renderBiologyInsightsButton(): string {
-  const on = getBiologyInsights();
-  return `
-    <button
-      id="toggle-biology-insights"
-      class="btn-ghost biology-insights-btn ${on ? 'btn-active' : ''}"
-      type="button"
-      title="${on ? 'Hide biology insights (confidence, activity, rain)' : 'Show biology insights — confidence & activity from RF trees'}"
-      aria-label="Toggle biology insights"
-    >🧬</button>`;
-}
-
-function showAlgorithmToast(name: string): void {
-  algorithmToast = `Model: ${name}`;
-  if (algorithmToastTimer) clearTimeout(algorithmToastTimer);
-  algorithmToastTimer = setTimeout(() => {
-    algorithmToast = null;
-    render();
-  }, 2500);
-}
-
-function switchAlgorithm(): void {
-  const next = cycleAlgorithm();
-  if (weather) rebuildForecasts();
-  showAlgorithmToast(next.name);
-  render();
+function renderFusedFlightStatus(dayIndex: number, fallbackText: string): string {
+  if (!weather || dayIndex < 0) {
+    return `<p class="flight-status">${fallbackText}</p>`;
+  }
+  const displayPct = dailyForecasts[dayIndex]?.percentage ?? dailyPercentages[dayIndex] ?? 0;
+  const insights = getDailyBiologyInsights(weather, dayIndex, displayPct);
+  const fused = biologyInsightsFlightText(insights, getGreenThreshold(), getAmberThreshold());
+  return `<p class="flight-status" style="color: ${scoreColor(displayPct)}">${fused}</p>
+    ${renderBiologyInsightsPanel(dayIndex, null)}`;
 }
 
 function renderWeatherSourceNote(): string {
@@ -737,7 +818,6 @@ function renderDayDetail(): string {
       : 0;
 
   const dayOverallPct = day.dailyModelPercentage ?? day.percentage;
-  const dailyInsightsMeta = dayIndex >= 0 ? renderBiologyInsightsPanel(dayIndex, null) : '';
 
   return `
     <section class="day-detail">
@@ -745,8 +825,7 @@ function renderDayDetail(): string {
         <h2>${day.label === 'Today' ? 'Today' : day.label + ' (' + day.weekday + ')'}</h2>
         ${isEstimate ? '<p class="estimate-badge">Climate average · daily estimate only</p>' : ''}
         ${day.hasGreenSlot ? `<p class="green-slot-badge">🟢 Has a green hourly window (≥${getGreenThreshold()}%)</p>` : ''}
-        <p class="flight-status" style="color: ${scoreColor(day.percentage)}">${day.flightText}</p>
-        ${dailyInsightsMeta}
+        ${dayIndex >= 0 ? renderFusedFlightStatus(dayIndex, day.flightText) : `<p class="flight-status" style="color: ${scoreColor(day.percentage)}">${day.flightText}</p>`}
       </div>
 
       ${
@@ -816,22 +895,19 @@ function render(): void {
 
   app.innerHTML = `
     <div class="floating-controls">
-      <div class="header-actions">
-        <button id="toggle-theme" class="btn-ghost" type="button" title="Switch to ${getTheme() === 'dark' ? 'light' : 'dark'} mode" aria-label="Toggle light or dark mode">
-          ${getTheme() === 'dark' ? '☀️' : '🌙'}
-        </button>
-        <button id="toggle-simple" class="btn-ghost ${getSimpleMode() ? 'btn-active' : ''}" type="button" title="${getSimpleMode() ? 'Exit compact layout' : 'Compact layout — fit more on screen'}" aria-label="Toggle compact layout">
-          ${getSimpleMode() ? '⊞' : '⊟'}
-        </button>
-        <button id="toggle-mode" class="btn-ghost" title="Toggle percentage / emoji display">
-          ${showPercentages ? '🐜' : '%'}
-        </button>
-        ${renderAlgorithmButton()}
-        ${renderBiologyInsightsButton()}
-        ${renderSpeciesControl()}
-        ${renderSightingsButton()}
+      <div class="floating-controls-bar">
+        ${renderNearbyControl(nearbyStatus, nearbyResult)}
+        <div class="header-actions">
+          <button id="toggle-simple" class="btn-ghost ${getSimpleMode() ? 'btn-active' : ''}" type="button" title="${getSimpleMode() ? 'Exit compact layout' : 'Compact layout — fit more on screen'}" aria-label="Toggle compact layout">
+            ${getSimpleMode() ? '⊞' : '⊟'}
+          </button>
+          <button id="toggle-mode" class="btn-ghost" title="Toggle percentage / emoji display">
+            ${showPercentages ? '🐜' : '%'}
+          </button>
+          ${renderSpeciesControl()}
+          ${renderSightingsButton()}
+        </div>
       </div>
-      ${algorithmToast ? `<div class="algorithm-toast" role="status">${algorithmToast}</div>` : ''}
     </div>
 
     <div class="location-search-sticky">${renderLocationSearchBar(weather.locationName, getSimpleMode())}</div>
@@ -876,12 +952,14 @@ function render(): void {
     ${renderSightingsModal()}
     ${renderSpeciesInfoModal()}
     ${renderSpeciesPopoverPanel()}
+    ${renderNearbyPopoverPanel(nearbyStatus, nearbyResult, showPercentages, weather.lat, weather.lon)}
   `;
 
   bindEvents();
   bindSightingsModal();
   bindLocationSearchInputs();
   positionSpeciesPopover();
+  positionNearbyPopover();
   hideGreenSpeciesTipFloat();
 }
 
@@ -912,15 +990,6 @@ function bindEvents(): void {
     });
   });
 
-  document.getElementById('algorithm-switch')?.addEventListener('click', () => {
-    switchAlgorithm();
-  });
-
-  document.getElementById('toggle-theme')?.addEventListener('click', () => {
-    toggleTheme();
-    render();
-  });
-
   document.getElementById('toggle-simple')?.addEventListener('click', () => {
     toggleSimpleMode();
     render();
@@ -931,11 +1000,6 @@ function bindEvents(): void {
       toggleHourlyAnchor();
       render();
     });
-  });
-
-  document.getElementById('toggle-biology-insights')?.addEventListener('click', () => {
-    toggleBiologyInsights();
-    render();
   });
 
   document.getElementById('toggle-mode')?.addEventListener('click', () => {
@@ -1018,16 +1082,33 @@ function showLoading(message: string): void {
     </div>`;
 }
 
-async function loadLocation(lat: number, lon: number, name?: string): Promise<void> {
-  showLoading('Fetching weather forecast…');
+async function loadLocation(
+  lat: number,
+  lon: number,
+  name?: string,
+  opts?: { fromNearby?: boolean },
+): Promise<void> {
+  const fromNearby = opts?.fromNearby === true;
+  showLoading(fromNearby ? 'Loading nearby forecast…' : 'Fetching weather forecast…');
   try {
     await ensureModelsLoaded();
     weather = await fetchWeather(lat, lon, name);
-    saveLocation({ lat, lon, name: weather.locationName });
     selectedDay = 0;
     selectedExtendedIndex = null;
     forecastView = '7d';
     rebuildForecasts();
+
+    if (fromNearby) {
+      // Preview only — keep starting location + nearby ranking fixed
+      setViewingNearbyHop(true);
+      // Do not overwrite saved home location or promote this hop to a new origin
+      if (nearbyResult) nearbyStatus = 'ready';
+      else queueNearbyScan();
+    } else {
+      setNearbyHomeFromWeather(weather, hourlyScores);
+      saveLocation({ lat, lon, name: weather.locationName });
+      queueNearbyScan();
+    }
     render();
   } catch (e) {
     showError(e instanceof Error ? e.message : 'Failed to load forecast');
@@ -1052,7 +1133,30 @@ async function init(): Promise<void> {
     onRender: () => render(),
     onSpeciesChange: () => {
       rebuildForecasts();
+      if (!isViewingNearbyHop() && weather) {
+        setNearbyHomeFromWeather(weather, hourlyScores);
+      } else {
+        const hw = getNearbyHomeWeather();
+        if (hw) updateNearbyHomeScores(computeHourlyScores(hw));
+      }
+      queueNearbyScan();
       render();
+    },
+  });
+  initNearbyUi({
+    selectTown: (lat, lon, name) => {
+      closeNearbyPopover();
+      void loadLocation(lat, lon, name, { fromNearby: true });
+    },
+    returnHome: () => {
+      const home = getNearbyHome();
+      if (!home) return;
+      closeNearbyPopover();
+      void loadLocation(home.lat, home.lon, home.name);
+    },
+    requestRender: () => {
+      if (document.querySelector('.floating-controls-bar')) patchNearbyChrome();
+      else render();
     },
   });
   loadSavedAlgorithmId();

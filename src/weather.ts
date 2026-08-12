@@ -3,6 +3,7 @@ import type { WeatherSnapshot } from './db/types';
 import { FORECAST_DAY_LIMIT } from './types';
 import { buildGeocodingCandidates } from './geocoding-query';
 import { buildLocationPlace } from './species/range';
+import { reverseGeocodeCoords } from './geo/reverse-geocode';
 
 const WEATHER_CODES: Record<number, string> = {
   0: 'Clear sky',
@@ -173,35 +174,14 @@ function fallbackPlace(lat: number, lon: number): WeatherPlace {
 
 export async function reverseGeocode(lat: number, lon: number): Promise<ReverseGeocodeResult> {
   const fallbackName = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
-  const url = new URL('https://geocoding-api.open-meteo.com/v1/reverse');
-  url.searchParams.set('latitude', lat.toFixed(4));
-  url.searchParams.set('longitude', lon.toFixed(4));
-  url.searchParams.set('language', 'en');
-  url.searchParams.set('format', 'json');
-
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      return { displayName: fallbackName, place: fallbackPlace(lat, lon) };
-    }
-    const data = await res.json();
-    const hit = data.results?.[0];
-    if (!hit) {
-      return { displayName: fallbackName, place: fallbackPlace(lat, lon) };
-    }
-    return {
-      displayName: [hit.name, hit.admin1, hit.country].filter(Boolean).join(', '),
-      place: buildLocationPlace({
-        lat,
-        lon,
-        countryCode: hit.country_code,
-        country: hit.country,
-        admin1: hit.admin1,
-      }),
-    };
-  } catch {
+  const hit = await reverseGeocodeCoords(lat, lon);
+  if (!hit) {
     return { displayName: fallbackName, place: fallbackPlace(lat, lon) };
   }
+  return {
+    displayName: hit.displayName || fallbackName,
+    place: hit.place,
+  };
 }
 
 function addDaysYmd(ymd: string, days: number): string {
@@ -413,6 +393,125 @@ async function fetchWeatherFromOpenMeteo(
     place: resolved.place,
     daily: dailyEnriched,
     extendedDaily,
+    hourly,
+    forecastDayCount: dailyEnriched.length,
+    weatherSource: 'open-meteo',
+  };
+}
+
+/**
+ * Lightweight forecast for nearby-town scans: 2 days, no climate fill, no reverse geocode.
+ * Caller supplies display name + place (same-state scan).
+ */
+export async function fetchWeatherLite(
+  lat: number,
+  lon: number,
+  meta: { locationName: string; place: WeatherPlace },
+): Promise<WeatherData> {
+  const url = new URL('https://api.open-meteo.com/v1/forecast');
+  url.searchParams.set('latitude', lat.toString());
+  url.searchParams.set('longitude', lon.toString());
+  url.searchParams.set(
+    'hourly',
+    [
+      'temperature_2m',
+      'relative_humidity_2m',
+      'dew_point_2m',
+      'pressure_msl',
+      'cloud_cover',
+      'precipitation_probability',
+      'rain',
+      'wind_speed_10m',
+      'wind_gusts_10m',
+      'uv_index',
+    ].join(','),
+  );
+  url.searchParams.set(
+    'daily',
+    [
+      'weather_code',
+      'temperature_2m_max',
+      'temperature_2m_min',
+      'temperature_2m_mean',
+      'relative_humidity_2m_mean',
+      'dew_point_2m_mean',
+      'pressure_msl_mean',
+      'cloud_cover_mean',
+      'precipitation_probability_max',
+      'precipitation_sum',
+      'wind_speed_10m_max',
+      'wind_gusts_10m_max',
+      'uv_index_max',
+      'sunrise',
+      'sunset',
+    ].join(','),
+  );
+  url.searchParams.set('wind_speed_unit', 'ms');
+  url.searchParams.set('forecast_days', '2');
+  url.searchParams.set('timezone', 'auto');
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Nearby forecast fetch failed');
+
+  const data = await res.json();
+  const tzOffsetSeconds = data.utc_offset_seconds ?? 0;
+
+  const daily: DailyWeather[] = data.daily.time.map((dateStr: string, i: number) => {
+    const dt = parseOpenMeteoLocalTime(`${dateStr}T12:00:00`, tzOffsetSeconds);
+    const sunrise = data.daily.sunrise?.[i]
+      ? parseOpenMeteoLocalTime(data.daily.sunrise[i], tzOffsetSeconds)
+      : undefined;
+    const sunset = data.daily.sunset?.[i]
+      ? parseOpenMeteoLocalTime(data.daily.sunset[i], tzOffsetSeconds)
+      : undefined;
+    const max = data.daily.temperature_2m_max[i];
+    const min = data.daily.temperature_2m_min[i];
+    const mean = data.daily.temperature_2m_mean[i];
+    return {
+      dt,
+      sunrise,
+      sunset,
+      temp: { day: owmStyleDayTemp(max, min, mean), min, max },
+      humidity: data.daily.relative_humidity_2m_mean[i] ?? 70,
+      dewPoint: data.daily.dew_point_2m_mean[i] ?? 10,
+      pressure: data.daily.pressure_msl_mean[i] ?? 1013,
+      windSpeed: data.daily.wind_speed_10m_max[i] ?? 0,
+      windGust: data.daily.wind_gusts_10m_max[i] ?? data.daily.wind_speed_10m_max[i] ?? 0,
+      clouds: data.daily.cloud_cover_mean[i] ?? 50,
+      pop: (data.daily.precipitation_probability_max[i] ?? 0) / 100,
+      uvi: data.daily.uv_index_max[i] ?? 0,
+      rain: data.daily.precipitation_sum[i] ?? 0,
+      moonPhase: moonPhaseFromDate(new Date(dt * 1000)),
+      description: weatherDescription(data.daily.weather_code[i]),
+      isEstimate: false,
+    };
+  });
+
+  const hourly: HourlyWeather[] = data.hourly.time.map((timeStr: string, i: number) => ({
+    dt: parseOpenMeteoLocalTime(timeStr, tzOffsetSeconds),
+    temp: data.hourly.temperature_2m[i],
+    humidity: data.hourly.relative_humidity_2m[i],
+    dewPoint: data.hourly.dew_point_2m[i],
+    pressure: data.hourly.pressure_msl[i] ?? 1013,
+    windSpeed: data.hourly.wind_speed_10m[i],
+    windGust: data.hourly.wind_gusts_10m[i] ?? data.hourly.wind_speed_10m[i],
+    clouds: data.hourly.cloud_cover[i] ?? 0,
+    pop: (data.hourly.precipitation_probability[i] ?? 0) / 100,
+    uvi: data.hourly.uv_index[i] ?? 0,
+    rain: data.hourly.rain?.[i] ?? 0,
+  }));
+
+  const dailyEnriched = enrichDailyFromHourly(daily, hourly, tzOffsetSeconds);
+
+  return {
+    lat,
+    lon,
+    timezone: data.timezone,
+    timezoneOffset: tzOffsetSeconds,
+    locationName: meta.locationName,
+    place: { ...meta.place, lat, lon },
+    daily: dailyEnriched,
+    extendedDaily: [],
     hourly,
     forecastDayCount: dailyEnriched.length,
     weatherSource: 'open-meteo',
