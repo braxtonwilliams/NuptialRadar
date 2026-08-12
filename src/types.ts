@@ -31,9 +31,21 @@ export interface HourlyWeather {
   clouds: number;
   pop: number;
   uvi: number;
+  /** Hourly rain mm when available from Open-Meteo. */
+  rain?: number;
 }
 
 export type WeatherSource = 'open-meteo';
+
+/** Structured place for species range filtering (from reverse geocode). */
+export interface WeatherPlace {
+  lat: number;
+  lon: number;
+  countryCode: string | null;
+  country: string | null;
+  admin1: string | null;
+  usState: string | null;
+}
 
 export interface WeatherData {
   lat: number;
@@ -41,6 +53,8 @@ export interface WeatherData {
   timezone: string;
   timezoneOffset: number;
   locationName: string;
+  /** Country / region for native–invasive species filtering. */
+  place: WeatherPlace;
   /** Live forecast days (hourly + daily model). */
   daily: DailyWeather[];
   /** Climate-average daily fill for the rest of the calendar month. */
@@ -74,5 +88,6 @@ export interface GeocodeResult {
   lat: number;
   lon: number;
   country: string;
+  countryCode?: string;
   admin1?: string;
 }

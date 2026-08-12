@@ -9,7 +9,7 @@ const BIOLOGY_INSIGHTS_KEY = 'nuptial-radar-biology-insights';
 
 let theme: ThemeMode = 'dark';
 let simpleMode = true;
-let hourlyAnchor: HourlyAnchor = 'midnight';
+let hourlyAnchor: HourlyAnchor = 'now';
 let biologyInsights = false;
 
 function applyToDocument(): void {

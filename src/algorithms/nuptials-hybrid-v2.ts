@@ -23,12 +23,12 @@ import { literatureDailyScore, literatureHourlyScore } from './literature-scorin
 import { LITERATURE_STUDIES } from './references';
 import type { FlightAlgorithm } from './types';
 
-const W_RF_DAILY = 0.52;
-const W_LIT_DAILY = 0.38;
+const W_RF_DAILY = 0.62;
+const W_LIT_DAILY = 0.28;
 const W_CROSS_DAILY = 0.1;
 
-const W_RF_HOURLY = 0.48;
-const W_LIT_HOURLY = 0.42;
+const W_RF_HOURLY = 0.6;
+const W_LIT_HOURLY = 0.3;
 const W_CROSS_HOURLY = 0.1;
 
 function clampProb(p: number): number {

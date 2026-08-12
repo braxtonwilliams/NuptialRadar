@@ -53,6 +53,19 @@ import {
   renderSightingsButton,
   renderSightingsModal,
 } from './sightings-ui';
+import {
+  initSpeciesUi,
+  positionSpeciesPopover,
+  renderSpeciesControl,
+  renderSpeciesInfoModal,
+  renderSpeciesOutlook,
+  renderSpeciesPopoverPanel,
+  renderGreenSlotSpeciesTip,
+  hideGreenSpeciesTipFloat,
+  setSpeciesForecastContext,
+  syncSpeciesToWeatherPlace,
+} from './species/species-ui';
+import { getSelectedSpecies, loadSavedSpeciesId } from './species/selection';
 
 const STORAGE_KEY = 'nuptial-radar-location';
 
@@ -79,12 +92,14 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 
 function rebuildForecasts(): void {
   if (!weather) return;
+  syncSpeciesToWeatherPlace(weather);
   hourlyScores = computeHourlyScores(weather);
   const built = buildDayForecasts(weather, hourlyScores);
   dailyForecasts = built.dailyForecasts;
   extendedForecasts = built.extendedForecasts;
   dailyPercentages = built.dailyPercentages;
   extendedPercentages = built.extendedPercentages;
+  setSpeciesForecastContext(weather);
 
   if (forecastView === 'month' && !hasGreenTimeSlot(hourlyScores)) {
     forecastView = '7d';
@@ -156,17 +171,22 @@ function renderHourlyChart(dayIndex: number): string {
   });
   if (hourly.length === 0) return '';
 
+  const greenThreshold = getGreenThreshold();
   const bars = hourly
     .map((h, i) => {
       const local = new Date((h.dt + weather!.timezoneOffset) * 1000);
       const hour = local.toLocaleTimeString(undefined, { hour: 'numeric', hour12: true, timeZone: 'UTC' });
-      const pct = hourlyScores[indices[i]] ?? 0;
+      const idx = indices[i];
+      const pct = hourlyScores[idx] ?? 0;
       const displayHeight = Math.max(10, pct);
       const color = scoreColor(pct);
+      const isGreen = pct >= greenThreshold;
+      const tip = isGreen ? renderGreenSlotSpeciesTip(idx, pct) : '';
       const title = `${hour}: ${pct}% (${h.temp.toFixed(1)}°C, ${h.windSpeed.toFixed(1)} m/s wind)`;
       return `
-        <div class="hour-bar" title="${title}">
-          <div class="hour-bar-fill" style="height:${displayHeight}%;background:${color}"></div>
+        <div class="hour-bar${isGreen ? ' hour-bar-green' : ''}" ${tip ? '' : `title="${title}"`}>
+          ${tip}
+          <div class="hour-bar-fill" style="height:${displayHeight}%;background:${color}" title="${title}"></div>
           <span class="hour-label">${local.getUTCHours() % 12 || 12}${local.getUTCHours() >= 12 ? 'p' : 'a'}</span>
         </div>`;
     })
@@ -190,11 +210,31 @@ function renderCompactHourlyPanel(): string {
 
   const diurnalHour = findHourAtLocalTime(weather.hourly, weather.timezoneOffset, '11AM');
   const nocturnalHour = findHourAtLocalTime(weather.hourly, weather.timezoneOffset, '7PM');
+  const diurnalIdx = diurnalHour ? weather.hourly.indexOf(diurnalHour) : -1;
+  const nocturnalIdx = nocturnalHour ? weather.hourly.indexOf(nocturnalHour) : -1;
   const diurnalPct = diurnalHour
-    ? percentageToInt(scoreHourlyProbability(weather.lat, weather.lon, diurnalHour, weather.timezoneOffset))
+    ? percentageToInt(
+        scoreHourlyProbability(
+          weather.lat,
+          weather.lon,
+          diurnalHour,
+          weather.timezoneOffset,
+          weather,
+          diurnalIdx >= 0 ? diurnalIdx : undefined,
+        ),
+      )
     : 0;
   const nocturnalPct = nocturnalHour
-    ? percentageToInt(scoreHourlyProbability(weather.lat, weather.lon, nocturnalHour, weather.timezoneOffset))
+    ? percentageToInt(
+        scoreHourlyProbability(
+          weather.lat,
+          weather.lon,
+          nocturnalHour,
+          weather.timezoneOffset,
+          weather,
+          nocturnalIdx >= 0 ? nocturnalIdx : undefined,
+        ),
+      )
     : 0;
 
   const chart = renderHourlyChart(dayIndex);
@@ -265,17 +305,23 @@ function renderSizeBreakdown(day: DayForecast): string {
     { key: 'medium', label: 'Medium queens', icon: '🐜🐜' },
     { key: 'large', label: 'Large queens', icon: '🐜🐜🐜' },
   ] as const;
+  const focusSize = getSelectedSpecies()?.sizeClass ?? null;
 
   return `
     <div class="size-breakdown">
       <h3>Species size likelihood</h3>
-      <p class="size-note">Different queen sizes peak in different months for your hemisphere.</p>
+      <p class="size-note">Different queen sizes peak in different months for your hemisphere.${
+        focusSize
+          ? ` Highlighted for <em>${getSelectedSpecies()!.genus}</em> (${focusSize}).`
+          : ''
+      }</p>
       <div class="size-bars">
         ${sizes
           .map(({ key, label }) => {
             const pct = day.sizePercentages[key];
+            const focus = focusSize === key ? ' size-row-focus' : '';
             return `
-            <div class="size-row">
+            <div class="size-row${focus}">
               <span class="size-label">${label}</span>
               <div class="size-track">
                 <div class="size-fill" style="width:${Math.min(100, pct)}%;background:${scoreColor(pct)}"></div>
@@ -458,7 +504,9 @@ function render24HourView(): string {
     .map((slot) => {
       const isGreen = slot.percentage >= greenThreshold;
       const title = `${slot.timeLabel}: ${slot.percentage}%`;
-      return `<div class="glance-block ${isGreen ? 'glance-green' : ''}" style="background:${scoreColor(slot.percentage)}" title="${title}"></div>`;
+      const hourlyIndex = weather!.hourly.findIndex((h) => h.dt === slot.dt);
+      const tip = isGreen ? renderGreenSlotSpeciesTip(hourlyIndex, slot.percentage) : '';
+      return `<div class="glance-block ${isGreen ? 'glance-green' : ''}" style="background:${scoreColor(slot.percentage)}" ${tip ? '' : `title="${title}"`}>${tip}</div>`;
     })
     .join('');
 
@@ -659,16 +707,32 @@ function renderDayDetail(): string {
     !isEstimate && dayIndex >= 0
       ? findHourAtLocalTime(weather.hourly, weather.timezoneOffset, '7PM')
       : null;
+  const diurnalIdx = diurnalHour ? weather.hourly.indexOf(diurnalHour) : -1;
+  const nocturnalIdx = nocturnalHour ? weather.hourly.indexOf(nocturnalHour) : -1;
   const diurnalPct =
     diurnalHour && !isEstimate
       ? percentageToInt(
-          scoreHourlyProbability(weather.lat, weather.lon, diurnalHour, weather.timezoneOffset),
+          scoreHourlyProbability(
+            weather.lat,
+            weather.lon,
+            diurnalHour,
+            weather.timezoneOffset,
+            weather,
+            diurnalIdx >= 0 ? diurnalIdx : undefined,
+          ),
         )
       : 0;
   const nocturnalPct =
     nocturnalHour && !isEstimate
       ? percentageToInt(
-          scoreHourlyProbability(weather.lat, weather.lon, nocturnalHour, weather.timezoneOffset),
+          scoreHourlyProbability(
+            weather.lat,
+            weather.lon,
+            nocturnalHour,
+            weather.timezoneOffset,
+            weather,
+            nocturnalIdx >= 0 ? nocturnalIdx : undefined,
+          ),
         )
       : 0;
 
@@ -764,6 +828,7 @@ function render(): void {
         </button>
         ${renderAlgorithmButton()}
         ${renderBiologyInsightsButton()}
+        ${renderSpeciesControl()}
         ${renderSightingsButton()}
       </div>
       ${algorithmToast ? `<div class="algorithm-toast" role="status">${algorithmToast}</div>` : ''}
@@ -789,6 +854,7 @@ function render(): void {
     </header>
 
     <main class="main">
+      ${weather ? renderSpeciesOutlook(weather, hourlyScores) : ''}
       ${renderForecastContent()}
 
       <section class="legend">
@@ -799,6 +865,7 @@ function render(): void {
           <a href="https://github.com/bradrushworth/nuptialflight" target="_blank" rel="noopener">nuptialflight</a>
           random-forest models. Red &lt;50%, amber 50–54%, green ≥${getGreenThreshold()}%.
           Log sightings with 📝 to calibrate forecasts using your local flight history.
+          Use 🐜 to filter by genus (Camponotus, Solenopsis, …) — scores factor rain lag, month, and time of day.
         </p>
       </section>
     </main>
@@ -807,11 +874,15 @@ function render(): void {
       <p>Weather from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · Models from nuptialflight (GPL-3.0)</p>
     </footer>
     ${renderSightingsModal()}
+    ${renderSpeciesInfoModal()}
+    ${renderSpeciesPopoverPanel()}
   `;
 
   bindEvents();
   bindSightingsModal();
   bindLocationSearchInputs();
+  positionSpeciesPopover();
+  hideGreenSpeciesTipFloat();
 }
 
 function bindEvents(): void {
@@ -977,7 +1048,15 @@ async function init(): Promise<void> {
   initLocationSearch((lat, lon, name) => {
     void loadLocation(lat, lon, name);
   });
+  initSpeciesUi({
+    onRender: () => render(),
+    onSpeciesChange: () => {
+      rebuildForecasts();
+      render();
+    },
+  });
   loadSavedAlgorithmId();
+  loadSavedSpeciesId();
   showLoading('Loading prediction models…');
   try {
     await ensureModelsLoaded();

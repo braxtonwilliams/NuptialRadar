@@ -1,10 +1,17 @@
 /**
  * Routes all flight scoring through the active algorithm from the registry,
- * then applies local calibration from logged sightings when enabled.
+ * then applies local calibration (Hybrid) and optional genus timing.
+ * Forest v1 + All species = raw RF (nuptialflight parity).
  */
 import { getSightingsForCalibration } from '../db/sightings';
 import { percentageToInt } from '../nuptials';
 import type { DailyWeather, HourlyWeather, WeatherData } from '../types';
+import {
+  applyTimingAndSpecies,
+  buildDailyTimingContext,
+  buildHourlyTimingContext,
+} from '../species/timing';
+import { getSelectedSpecies } from '../species/selection';
 import {
   buildBiologyInsights,
   dailyRfConfidence,
@@ -83,6 +90,23 @@ function finalizeDaily(
   return applyLocalCalibration(baseProb, boost, matchCount);
 }
 
+function applyStandaloneTiming(
+  base: number,
+  lat: number,
+  dt: number,
+  tzOffsetSeconds: number,
+  mode: 'hourly' | 'daily',
+): number {
+  return applyTimingAndSpecies(base, {
+    lat,
+    dt,
+    tzOffsetSeconds,
+    hoursSinceRain: null,
+    species: getSelectedSpecies(),
+    mode,
+  });
+}
+
 export function getGreenThreshold(): number {
   return getActiveAlgorithm().greenThreshold;
 }
@@ -156,6 +180,8 @@ export function scoreHourlyProbability(
   lon: number,
   hourly: HourlyWeather,
   tzOffsetSeconds = 0,
+  weather?: WeatherData,
+  hourlyIndex?: number,
 ): number {
   const algo = getActiveAlgorithm();
   let base =
@@ -163,7 +189,32 @@ export function scoreHourlyProbability(
       ? nuptialHourlyPercentageV2(lat, lon, hourly, tzOffsetSeconds)
       : algo.nuptialHourlyPercentage(lat, lon, hourly);
   base = finalizeHourly(base, lat, lon, hourly, tzOffsetSeconds);
-  return base;
+
+  if (weather && hourlyIndex != null) {
+    return applyTimingAndSpecies(base, buildHourlyTimingContext(weather, hourlyIndex));
+  }
+  return applyStandaloneTiming(base, lat, hourly.dt, tzOffsetSeconds, 'hourly');
+}
+
+/** RF/hybrid + calibration only — used to rank genera without the selected-species layer. */
+export function scoreHourlyBaseProbability(
+  lat: number,
+  lon: number,
+  hourly: HourlyWeather,
+  tzOffsetSeconds = 0,
+): number {
+  const algo = getActiveAlgorithm();
+  let base =
+    algo.id === hybridLiteratureV2Algorithm.id
+      ? nuptialHourlyPercentageV2(lat, lon, hourly, tzOffsetSeconds)
+      : algo.nuptialHourlyPercentage(lat, lon, hourly);
+  return finalizeHourly(base, lat, lon, hourly, tzOffsetSeconds);
+}
+
+export function scoreHourlyBaseForWeather(weather: WeatherData): number[] {
+  return weather.hourly.map((h) =>
+    scoreHourlyBaseProbability(weather.lat, weather.lon, h, weather.timezoneOffset),
+  );
 }
 
 export function scoreHourly(
@@ -172,11 +223,17 @@ export function scoreHourly(
   hourly: HourlyWeather[],
   tzOffsetSeconds = 0,
 ): number[] {
-  return hourly.map((h) => percentageToInt(scoreHourlyProbability(lat, lon, h, tzOffsetSeconds)));
+  return hourly.map((h) =>
+    percentageToInt(scoreHourlyProbability(lat, lon, h, tzOffsetSeconds)),
+  );
 }
 
 export function scoreHourlyForWeather(weather: WeatherData): number[] {
-  return scoreHourly(weather.lat, weather.lon, weather.hourly, weather.timezoneOffset);
+  return weather.hourly.map((h, i) =>
+    percentageToInt(
+      scoreHourlyProbability(weather.lat, weather.lon, h, weather.timezoneOffset, weather, i),
+    ),
+  );
 }
 
 export function scoreDailyProbability(
@@ -186,29 +243,37 @@ export function scoreDailyProbability(
   tzOffsetSeconds: number,
   pop1?: number,
   pop2?: number,
+  weather?: WeatherData,
+  dailyIndex?: number,
 ): number {
   const algo = getActiveAlgorithm();
   let base = algo.nuptialDailyPercentage(lat, lon, daily, pop1, pop2);
   base = finalizeDaily(base, lat, lon, daily, tzOffsetSeconds);
-  return base;
+
+  if (weather && dailyIndex != null) {
+    return applyTimingAndSpecies(base, buildDailyTimingContext(weather, dailyIndex));
+  }
+  return applyStandaloneTiming(base, lat, daily.dt, tzOffsetSeconds, 'daily');
 }
 
-export function scoreAllDays(lat: number, lon: number, daily: DailyWeather[], tzOffset = 0): number[] {
-  const algo = getActiveAlgorithm();
+export function scoreAllDays(
+  lat: number,
+  lon: number,
+  daily: DailyWeather[],
+  tzOffset = 0,
+  weather?: WeatherData,
+): number[] {
   return daily.map((day, i) =>
     percentageToInt(
-      finalizeDaily(
-        algo.nuptialDailyPercentage(
-          lat,
-          lon,
-          day,
-          i + 1 < daily.length ? daily[i + 1].pop : undefined,
-          i + 2 < daily.length ? daily[i + 2].pop : undefined,
-        ),
+      scoreDailyProbability(
         lat,
         lon,
         day,
         tzOffset,
+        i + 1 < daily.length ? daily[i + 1].pop : undefined,
+        i + 2 < daily.length ? daily[i + 2].pop : undefined,
+        weather,
+        weather ? i : undefined,
       ),
     ),
   );

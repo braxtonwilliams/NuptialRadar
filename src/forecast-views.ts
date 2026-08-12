@@ -108,6 +108,7 @@ export function buildDayForecasts(
     weather.lon,
     weather.daily,
     weather.timezoneOffset,
+    weather,
   );
 
   const dailyForecasts = weather.daily.map((day, index) => {

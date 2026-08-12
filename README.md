@@ -7,7 +7,8 @@ A web recreation of [nuptialflight](https://github.com/bradrushworth/nuptialflig
 - **7-day outlook** — color-coded flight probability for each of the next 8 days (today + week ahead)
 - **Hourly breakdown** — click any day to see hour-by-hour flight probability
 - **Species size hints** — seasonal likelihood for small, medium, and large queen ants
-- **Location search** — geocode any city, or use browser GPS
+- **Genus filter** — Camponotus, Solenopsis, Crematogaster, and other major genera with rain/month/hour-aware scores
+- **Location search** — geocode any city, or use approximate IP location
 - **Same ML models** — bundled random-forest models from the original app (`final_model.json`, `hour_model.json`)
 
 ## Quick start

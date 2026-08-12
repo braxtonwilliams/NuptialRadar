@@ -1,7 +1,8 @@
-import type { DailyWeather, GeocodeResult, HourlyWeather, WeatherData } from './types';
+import type { DailyWeather, GeocodeResult, HourlyWeather, WeatherData, WeatherPlace } from './types';
 import type { WeatherSnapshot } from './db/types';
 import { FORECAST_DAY_LIMIT } from './types';
 import { buildGeocodingCandidates } from './geocoding-query';
+import { buildLocationPlace } from './species/range';
 
 const WEATHER_CODES: Record<number, string> = {
   0: 'Clear sky',
@@ -125,11 +126,19 @@ async function fetchGeocodeResults(name: string, countryCode?: string): Promise<
   if (!res.ok) throw new Error('Location search failed');
   const data = await res.json();
   return (data.results ?? []).map(
-    (r: { name: string; latitude: number; longitude: number; country: string; admin1?: string }) => ({
+    (r: {
+      name: string;
+      latitude: number;
+      longitude: number;
+      country: string;
+      country_code?: string;
+      admin1?: string;
+    }) => ({
       name: r.name,
       lat: r.latitude,
       lon: r.longitude,
       country: r.country,
+      countryCode: r.country_code,
       admin1: r.admin1,
     }),
   );
@@ -153,19 +162,46 @@ export async function searchLocations(query: string): Promise<GeocodeResult[]> {
   return [];
 }
 
-export async function reverseGeocode(lat: number, lon: number): Promise<string> {
+export interface ReverseGeocodeResult {
+  displayName: string;
+  place: WeatherPlace;
+}
+
+function fallbackPlace(lat: number, lon: number): WeatherPlace {
+  return buildLocationPlace({ lat, lon });
+}
+
+export async function reverseGeocode(lat: number, lon: number): Promise<ReverseGeocodeResult> {
+  const fallbackName = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
   const url = new URL('https://geocoding-api.open-meteo.com/v1/reverse');
   url.searchParams.set('latitude', lat.toFixed(4));
   url.searchParams.set('longitude', lon.toFixed(4));
   url.searchParams.set('language', 'en');
   url.searchParams.set('format', 'json');
 
-  const res = await fetch(url);
-  if (!res.ok) return `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
-  const data = await res.json();
-  const place = data.results?.[0];
-  if (!place) return `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
-  return [place.name, place.admin1, place.country].filter(Boolean).join(', ');
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      return { displayName: fallbackName, place: fallbackPlace(lat, lon) };
+    }
+    const data = await res.json();
+    const hit = data.results?.[0];
+    if (!hit) {
+      return { displayName: fallbackName, place: fallbackPlace(lat, lon) };
+    }
+    return {
+      displayName: [hit.name, hit.admin1, hit.country].filter(Boolean).join(', '),
+      place: buildLocationPlace({
+        lat,
+        lon,
+        countryCode: hit.country_code,
+        country: hit.country,
+        admin1: hit.admin1,
+      }),
+    };
+  } catch {
+    return { displayName: fallbackName, place: fallbackPlace(lat, lon) };
+  }
 }
 
 function addDaysYmd(ymd: string, days: number): string {
@@ -264,7 +300,7 @@ async function fetchWeatherFromOpenMeteo(
       'temperature_2m',
       'relative_humidity_2m',
       'dew_point_2m',
-      'surface_pressure',
+      'pressure_msl',
       'cloud_cover',
       'precipitation_probability',
       'rain',
@@ -282,7 +318,7 @@ async function fetchWeatherFromOpenMeteo(
       'temperature_2m_mean',
       'relative_humidity_2m_mean',
       'dew_point_2m_mean',
-      'surface_pressure_mean',
+      'pressure_msl_mean',
       'cloud_cover_mean',
       'precipitation_probability_max',
       'precipitation_sum',
@@ -326,7 +362,8 @@ async function fetchWeatherFromOpenMeteo(
       },
       humidity: data.daily.relative_humidity_2m_mean[i] ?? 70,
       dewPoint: data.daily.dew_point_2m_mean[i] ?? 10,
-      pressure: data.daily.surface_pressure_mean[i] ?? 1013,
+      // MSL pressure matches OpenWeatherMap `pressure` used to train the RF
+      pressure: data.daily.pressure_msl_mean[i] ?? 1013,
       windSpeed: data.daily.wind_speed_10m_max[i] ?? 0,
       windGust: data.daily.wind_gusts_10m_max[i] ?? data.daily.wind_speed_10m_max[i] ?? 0,
       clouds: data.daily.cloud_cover_mean[i] ?? 50,
@@ -348,31 +385,36 @@ async function fetchWeatherFromOpenMeteo(
     extendedDaily = await fetchClimateDaily(lat, lon, climateStart, monthEnd, tzOffsetSeconds);
   }
 
-  const hourly: HourlyWeather[] = data.hourly.time.map((timeStr: string, i: number) => ({
+  let hourly: HourlyWeather[] = data.hourly.time.map((timeStr: string, i: number) => ({
     dt: parseOpenMeteoLocalTime(timeStr, tzOffsetSeconds),
     temp: data.hourly.temperature_2m[i],
     humidity: data.hourly.relative_humidity_2m[i],
     dewPoint: data.hourly.dew_point_2m[i],
-    pressure: data.hourly.surface_pressure[i],
+    // Sea-level pressure matches OWM One Call / training features
+    pressure: data.hourly.pressure_msl[i] ?? data.hourly.surface_pressure?.[i] ?? 1013,
     windSpeed: data.hourly.wind_speed_10m[i],
     windGust: data.hourly.wind_gusts_10m[i] ?? data.hourly.wind_speed_10m[i],
     clouds: data.hourly.cloud_cover[i] ?? 0,
     pop: (data.hourly.precipitation_probability[i] ?? 0) / 100,
     uvi: data.hourly.uv_index[i] ?? 0,
+    rain: data.hourly.rain?.[i] ?? 0,
   }));
 
-  const name = locationName ?? (await reverseGeocode(lat, lon));
+  let dailyEnriched = enrichDailyFromHourly(daily, hourly, tzOffsetSeconds);
+
+  const resolved = await reverseGeocode(lat, lon);
 
   return {
     lat,
     lon,
     timezone: data.timezone,
     timezoneOffset: tzOffsetSeconds,
-    locationName: name,
-    daily,
+    locationName: locationName ?? resolved.displayName,
+    place: resolved.place,
+    daily: dailyEnriched,
     extendedDaily,
     hourly,
-    forecastDayCount: daily.length,
+    forecastDayCount: dailyEnriched.length,
     weatherSource: 'open-meteo',
   };
 }
